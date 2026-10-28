@@ -33,6 +33,7 @@ Pass-and-play for 1–4 players: three runs each, and your best run counts.
 - `game.html`: the whole game in one file (loads three.js and cannon-es from a CDN, so it also runs on its own)
 - `public/`: the hosted site, built from `game.html` with the libraries served from `public/vendor/`
 - `tools/build_public.py`: rebuilds `public/index.html` after `game.html` changes
+- `tools/build_standalone.py`: a single-file copy with all sounds embedded
 - `wrangler.jsonc`: Cloudflare Workers config that serves `public/`
 
 ## Hosting
