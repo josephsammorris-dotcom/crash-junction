@@ -2954,7 +2954,7 @@ function updateCamera(dtReal) {
 // the impact (the track drops out under a filter sweep, then slams back in), results and replays.
 // Effects: engine and turbo, tyre screech, scraping metal, layered impacts (thump, crunch, clang), glass,
 // fireball explosions, fire roar and crackle, car, bus and truck horns, air brakes, boost whoosh and UI blips.
-const AU = { ctx: null, silent: false, vol: { music: 0.7, sfx: 0.9 }, muted: false, section: 'menu', next16: 0, step: 0, live: {} };
+const AU = { synthMusic: false, ctx: null, silent: false, vol: { music: 0.7, sfx: 0.9 }, muted: false, section: 'menu', next16: 0, step: 0, live: {} };
 try { const v = JSON.parse(localStorage.getItem('hsx-audio') || 'null'); if (v) Object.assign(AU.vol, v); } catch (_) {}
 const BPM = 140, S16 = 60 / BPM / 4;
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
@@ -2994,6 +2994,7 @@ function audioInit() {
   AU.next16 = c.currentTime + 0.12; AU.step = 0;
   setInterval(scheduleMusic, 25);
   startLoops();
+  loadSamples();
 }
 function impulse(sec, decay) {
   const c = AU.ctx, n = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, n, c.sampleRate);
@@ -3011,6 +3012,7 @@ function setVolumes() {
 function setSection(name) {
   AU.section = name;
   if (!AU.ctx) return;
+  musicTrackFor(name);
   const t = AU.ctx.currentTime, f = AU.musicFilter.frequency;
   f.cancelScheduledValues(t); f.setValueAtTime(f.value, t); f.exponentialRampToValueAtTime(SECTIONS[name].cut, t + (name === 'drive' ? 2.5 : 0.8));
 }
@@ -3027,7 +3029,7 @@ function musicImpact() {
   clearTimeout(AU.dropT); AU.dropT = setTimeout(() => { if (AU.section === 'break') AU.section = 'drive'; }, back * 1000 - 30);
 }
 function scheduleMusic() {
-  const c = AU.ctx; if (!c || c.state !== 'running') return;
+  const c = AU.ctx; if (!c || c.state !== 'running' || !AU.synthMusic) return;
   // after a stall (background tab, heavy frame) skip the missed beats rather than firing them all at once
   if (AU.next16 < c.currentTime - 0.05) { const miss = Math.ceil((c.currentTime - AU.next16) / S16); AU.step += miss; AU.next16 += miss * S16; }
   while (AU.next16 < c.currentTime + 0.12) { playStep(AU.step, AU.next16); AU.next16 += S16; AU.step++; }
@@ -3122,6 +3124,11 @@ function sfxImpact(vel, pos, heavy) {
   while (impactLog.length && impactLog[0] < t - 0.12) impactLog.shift();
   if (impactLog.length > 7 && vel < 14) return;
   impactLog.push(t);
+  if (SAMPLES['impact-heavy'] || SAMPLES['impact-light']) {
+    const k0 = THREE.MathUtils.clamp((vel - 2) / 22, 0.05, 1);
+    playSample(vel > 12 && SAMPLES['impact-heavy'] ? 'impact-heavy' : SAMPLES['impact-light'] ? 'impact-light' : 'impact-heavy', pos, 0.3 + 0.7 * k0, heavy ? 0.85 : 1);
+    return;
+  }
   const { att, pan } = spot(pos); if (att < 0.04) return;
   const k = THREE.MathUtils.clamp((vel - 2) / 22, 0.05, 1), o = out(pan), L = att * (0.4 + k * 0.6);
   tone(t, o, 'sine', heavy ? 62 : 85, 0.9 * L * k + 0.05, 0.003, 0.18 + 0.25 * k, 38);
@@ -3131,6 +3138,7 @@ function sfxImpact(vel, pos, heavy) {
 }
 function sfxGlass(pos) {
   if (!AU.ctx || AU.silent) return;
+  if (playSample('glass', pos, 0.8)) return;
   const t = AU.ctx.currentTime, { att, pan } = spot(pos); if (att < 0.05) return;
   const o = out(pan);
   for (let i = 0; i < 7; i++) { const tt = t + Math.random() * 0.22; noiseHit(tt, o, 'highpass', 5000 + Math.random() * 3000, 0.7, 0.18 * att, 0.001, 0.05 + Math.random() * 0.1); tone(tt, o, 'sine', 3000 + Math.random() * 4500, 0.05 * att, 0.001, 0.12); }
@@ -3138,16 +3146,20 @@ function sfxGlass(pos) {
 function sfxBoom(pos) {
   if (!AU.ctx || AU.silent) return;
   const c = AU.ctx, t = c.currentTime, { att, pan } = spot(pos), o = out(pan), L = Math.max(0.35, att);
+  if (SAMPLES.explosion) { const src = c.createBufferSource(), g = c.createGain(); src.buffer = pick('explosion'); g.gain.value = L; src.connect(g); g.connect(o); src.start(); }
+  else {
   noiseHit(t, o, 'lowpass', 1800, 0.6, 1.0 * L, 0.004, 2.6, 90);
   tone(t, o, 'sine', 70, 1.0 * L, 0.005, 1.8, 26);
   noiseHit(t + 0.05, o, 'bandpass', 500, 0.8, 0.5 * L, 0.01, 1.2, 150);
   for (let i = 0; i < 18; i++) noiseHit(t + 0.2 + Math.random() * 2.2, o, 'highpass', 2500, 0.8, 0.12 * L * Math.random(), 0.001, 0.03);
+  }
   // the music ducks under the blast
   const mg = AU.musicBus.gain; mg.cancelScheduledValues(t); mg.setValueAtTime(AU.vol.music * 0.16, t); mg.linearRampToValueAtTime(AU.vol.music * 0.7, t + 2.5);
 }
 const HORNS = { car: [[415, 523], 'square', 0.07], pickup: [[349, 440], 'square', 0.08], van: [[311, 392], 'sawtooth', 0.07], bus: [[294, 370], 'sawtooth', 0.08], lorry: [[147, 185, 233], 'sawtooth', 0.09], tanker: [[147, 185, 233], 'sawtooth', 0.09] };
 function sfxHorn(pos, type, len) {
   if (!AU.ctx || AU.silent) return;
+  if (playSample(type === 'lorry' || type === 'tanker' ? 'horn-truck' : type === 'bus' || type === 'van' ? 'horn-bus' : 'horn-car', pos, 0.8)) return;
   const c = AU.ctx, t = c.currentTime, { att, pan } = spot(pos); if (att < 0.06) return;
   const H = HORNS[type] || HORNS.car, o = out(pan), lp = c.createBiquadFilter(), g = c.createGain();
   lp.type = 'lowpass'; lp.frequency.value = 2600; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(H[2] * att * 2.2, t + 0.02);
@@ -3155,18 +3167,20 @@ function sfxHorn(pos, type, len) {
   lp.connect(g); g.connect(o);
   for (const f of H[0]) { const os = c.createOscillator(); os.type = H[1]; os.frequency.value = f * (0.99 + Math.random() * 0.02); os.connect(lp); os.start(t); os.stop(t + len + 0.1); }
 }
-function sfxHiss(pos) { if (!AU.ctx || AU.silent) return; const { att, pan } = spot(pos); if (att > 0.06) noiseHit(AU.ctx.currentTime, out(pan), 'highpass', 3500, 0.7, 0.22 * att, 0.01, 0.7); }
-function sfxWhoosh() { if (!AU.ctx || AU.silent) return; noiseHit(AU.ctx.currentTime, AU.sfx, 'bandpass', 380, 2.5, 0.22, 0.05, 0.55, 2400); }
-function sfxUi(hi) { if (!AU.ctx) return; const t = AU.ctx.currentTime; tone(t, AU.sfx, 'triangle', hi ? 1320 : 880, 0.08, 0.002, 0.07, hi ? 1760 : 1100); }
+function sfxHiss(pos) { if (!AU.ctx || AU.silent) return; if (playSample('airbrake', pos, 0.7)) return; const { att, pan } = spot(pos); if (att > 0.06) noiseHit(AU.ctx.currentTime, out(pan), 'highpass', 3500, 0.7, 0.22 * att, 0.01, 0.7); }
+function sfxWhoosh() { if (!AU.ctx || AU.silent) return; if (playSample('boost', null, 0.6)) return; noiseHit(AU.ctx.currentTime, AU.sfx, 'bandpass', 380, 2.5, 0.22, 0.05, 0.55, 2400); }
+function sfxUi(hi) { if (!AU.ctx) return; if (playSample('click', null, 0.5, hi ? 1.15 : 1)) return; const t = AU.ctx.currentTime; tone(t, AU.sfx, 'triangle', hi ? 1320 : 880, 0.08, 0.002, 0.07, hi ? 1760 : 1100); }
 function sfxCrash() {
   if (!AU.ctx) return;
   const c = AU.ctx, t = c.currentTime;
+  if (playSample('crash', null, 1)) { musicImpact(); return; }
   noiseHit(t, AU.sfx, 'lowpass', 3000, 0.5, 0.9, 0.003, 1.2, 120);
   tone(t, AU.sfx, 'sine', 90, 1, 0.003, 0.7, 30);
   musicImpact();
 }
 function sfxFanfare(medal) {
   if (!AU.ctx) return;
+  if (playSample('medal', null, 0.7)) return;
   const t = AU.ctx.currentTime, seq = medal === 'none' ? [69, 72, 76] : medal === 'bronze' ? [69, 73, 76, 81] : medal === 'silver' ? [69, 73, 76, 81, 85] : [69, 73, 76, 81, 85, 88, 93];
   seq.forEach((m, i) => { tone(t + i * 0.09, AU.sfx, 'sawtooth', mtof(m), 0.07, 0.004, 0.35); tone(t + i * 0.09, AU.sfx, 'square', mtof(m + 12), 0.03, 0.004, 0.25); });
 }
@@ -3222,11 +3236,96 @@ function updateAudio(dt) {
   L.scpG.gain.setTargetAtTime(Math.min(0.2, scp * 0.12), t, 0.08);
   L.fireG.gain.setTargetAtTime(Math.min(0.35, fire * 0.16), t, 0.3);
   L.trafG.gain.setTargetAtTime(Math.min(0.12, traf * 0.03), t, 0.4);
+  recordedLoopLevels();
   crackleT -= dt;
   if (fire > 0.05 && crackleT <= 0) { crackleT = 0.03 + Math.random() * 0.12 / Math.min(3, fire); noiseHit(t, AU.sfx, 'bandpass', 1800 + Math.random() * 3000, 2, Math.min(0.25, 0.05 + fire * 0.05) * Math.random(), 0.001, 0.02 + Math.random() * 0.03); }
 }
 // first touch, click or key starts the audio (browsers block sound until then)
 for (const ev of ['pointerdown', 'keydown', 'touchend']) window.addEventListener(ev, () => audioInit(), { passive: true });
+
+/* ------------------------------------------------------------------ recorded audio: files in audio/ replace the generated sounds one by one */
+// Drop files into audio/ (next to index.html) with these names; .mp3, .ogg or .wav all work, and -2, -3 … add
+// variations picked at random. Anything missing keeps its generated stand-in.
+const SAMPLE_NAMES = {
+  music: ['menu', 'drive', 'results'],
+  oneshot: ['crash', 'impact-heavy', 'impact-light', 'glass', 'explosion', 'horn-car', 'horn-truck', 'horn-bus', 'airbrake', 'boost', 'click', 'medal'],
+  loop: ['engine', 'skid', 'scrape', 'fire', 'traffic'],
+};
+const SAMPLES = {};
+let samplesTried = false;
+async function loadSamples() {
+  if (samplesTried || !AU.ctx || location.protocol === 'about:' || location.protocol === 'blob:') return;
+  samplesTried = true;
+  const base = new URL('audio/', document.baseURI);
+  const tryOne = async (name) => {
+    for (const ext of ['mp3', 'ogg', 'wav', 'm4a']) {
+      try {
+        const r = await fetch(new URL(`${name}.${ext}`, base), { cache: 'force-cache' });
+        if (!r.ok) continue;
+        const ct = r.headers.get('content-type') || '';
+        if (ct.includes('text/html')) continue; // a site fallback page, not audio
+        return await AU.ctx.decodeAudioData(await r.arrayBuffer());
+      } catch (_) {}
+    }
+    return null;
+  };
+  const all = [...SAMPLE_NAMES.music, ...SAMPLE_NAMES.oneshot, ...SAMPLE_NAMES.loop];
+  await Promise.all(all.map(async (name) => {
+    const list = [];
+    const first = await tryOne(name); if (first) list.push(first);
+    if (first) for (let k = 2; k <= 6; k++) { const b = await tryOne(`${name}-${k}`); if (!b) break; list.push(b); }
+    if (list.length) SAMPLES[name] = list;
+  }));
+  if (SAMPLE_NAMES.music.some((n) => SAMPLES[n])) startRecordedMusic();
+  for (const n of SAMPLE_NAMES.loop) if (SAMPLES[n]) swapLoop(n);
+}
+const pick = (name) => { const l = SAMPLES[name]; return l ? l[Math.floor(Math.random() * l.length)] : null; };
+function playSample(name, pos, gain = 1, rate = 1) {
+  const buf = pick(name); if (!buf || !AU.ctx || AU.silent) return !!buf;
+  const c = AU.ctx, src = c.createBufferSource(), g = c.createGain();
+  let dest = AU.sfx, att = 1;
+  if (pos) { const sp = spot(pos); att = sp.att; dest = out(sp.pan); }
+  if (att < 0.03) return true;
+  src.buffer = buf; src.playbackRate.value = rate * (0.94 + Math.random() * 0.12);
+  g.gain.value = gain * att; src.connect(g); g.connect(dest); src.start();
+  return true;
+}
+// recorded music: each section's track loops; changing section crossfades
+const MUSIC_FOR = { menu: 'menu', results: 'results', drive: 'drive', break: 'drive' };
+function startRecordedMusic() { AU.recorded = true; AU.synthMusic = false; AU.trackName = null; musicTrackFor(AU.section); }
+function musicTrackFor(section) {
+  if (!AU.recorded) return;
+  const name = SAMPLES[MUSIC_FOR[section]] ? MUSIC_FOR[section] : SAMPLES.drive ? 'drive' : SAMPLES.menu ? 'menu' : 'results';
+  if (name === AU.trackName) return;
+  const c = AU.ctx, t = c.currentTime;
+  if (AU.track) { const old = AU.track; old.g.gain.setTargetAtTime(0, t, 0.35); old.src.stop(t + 2); }
+  const src = c.createBufferSource(), g = c.createGain();
+  src.buffer = SAMPLES[name][0]; src.loop = true; g.gain.value = 0; g.gain.setTargetAtTime(1, t, 0.4);
+  src.connect(g); g.connect(AU.musicBus); src.start();
+  AU.track = { src, g }; AU.trackName = name;
+}
+// recorded loops replace the generated noise layers; their gain is still driven by updateAudio()
+function swapLoop(name) {
+  const L = AU.live, c = AU.ctx;
+  const target = { engine: L.engG, skid: L.scrG, scrape: L.scpG, fire: L.fireG, traffic: L.trafG }[name];
+  if (!target) return;
+  const g2 = c.createGain(); g2.gain.value = 0; g2.connect(AU.sfx);
+  // mute the generated layer by re-pointing its gain node at nothing, and follow its level on the recorded one
+  target.disconnect();
+  const follower = c.createGain(); follower.gain.value = name === 'engine' ? 6 : 3; // generated layers run quiet
+  const src = c.createBufferSource(); src.buffer = SAMPLES[name][0]; src.loop = true;
+  src.connect(g2); src.start(Math.max(0, c.currentTime), Math.random() * src.buffer.duration);
+  L['rec_' + name] = { src, g: g2, k: follower.gain.value };
+}
+function recordedLoopLevels() {
+  const L = AU.live, t = AU.ctx.currentTime;
+  const pairs = { engine: L.engG, skid: L.scrG, scrape: L.scpG, fire: L.fireG, traffic: L.trafG };
+  for (const n in pairs) {
+    const R = L['rec_' + n]; if (!R) continue;
+    R.g.gain.setTargetAtTime(Math.min(1, pairs[n].gain.value * R.k), t, 0.05);
+    if (n === 'engine') R.src.playbackRate.setTargetAtTime(0.6 + Math.abs(player.speed || 0) / 40, t, 0.1);
+  }
+}
 
 /* ------------------------------------------------------------------ action events: what the cameras chase after the impact */
 // Explosions outrank rollovers and new fires, which outrank big hits. The live camera zooms in on the latest
