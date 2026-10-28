@@ -355,6 +355,7 @@ body.touchmode .tune, body[data-ui="ready"] .tune, body[data-ui="results"] .tune
   <label class="check" for="tuneSlow"><input type="checkbox" id="tuneSlow" checked> Speed blur</label>
   <label class="check" for="tuneRumble"><input type="checkbox" id="tuneRumble" checked> Controller rumble</label>
   <label class="check" for="tuneDebug"><input type="checkbox" id="tuneDebug"> Show debug stats</label>
+  <p class="small">Sound effects: Stunt Rally 3 and SuperTuxKart contributors, and freesound.org recordings by Halleck, audible-edge, Mike Koenig, Daniel Simion and others (CC BY / CC BY-SA / CC0). Full list in audio/CREDITS.md.</p>
 </div>
 <button class="finish-btn" id="backBtn" hidden>Results <kbd class="kb">Enter</kbd><kbd class="pad">B</kbd></button>
 
@@ -3254,10 +3255,14 @@ const SAMPLE_NAMES = {
 const SAMPLES = {};
 let samplesTried = false;
 async function loadSamples() {
-  if (samplesTried || !AU.ctx || location.protocol === 'about:' || location.protocol === 'blob:') return;
+  if (samplesTried || !AU.ctx) return;
   samplesTried = true;
   const base = new URL('audio/', document.baseURI);
+  const EMB = window.__hsxAudio || {}; // sounds embedded in the page (the standalone build)
   const tryOne = async (name) => {
+    if (EMB[name]) {
+      try { const bin = atob(EMB[name]), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return await AU.ctx.decodeAudioData(u8.buffer); } catch (_) {}
+    }
     for (const ext of ['mp3', 'ogg', 'wav', 'm4a']) {
       try {
         const r = await fetch(new URL(`${name}.${ext}`, base), { cache: 'force-cache' });
@@ -3292,6 +3297,9 @@ function playSample(name, pos, gain = 1, rate = 1) {
 }
 // recorded music: each section's track loops; changing section crossfades
 const MUSIC_FOR = { menu: 'menu', results: 'results', drive: 'drive', break: 'drive' };
+// Loop points on bar lines (measured from the tracks: after the intro, before the fade), keyed by track length.
+// A replacement track of a different length simply loops end to start.
+const MUSIC_LOOPS = { menu: { dur: 202.8, s: 5.378, e: 190.534 }, drive: { dur: 220.0, s: 13.949, e: 213.233 }, results: { dur: 189.6, s: 1.817, e: 179.874 } };
 function startRecordedMusic() { AU.recorded = true; AU.synthMusic = false; AU.trackName = null; musicTrackFor(AU.section); }
 function musicTrackFor(section) {
   if (!AU.recorded) return;
@@ -3301,6 +3309,8 @@ function musicTrackFor(section) {
   if (AU.track) { const old = AU.track; old.g.gain.setTargetAtTime(0, t, 0.35); old.src.stop(t + 2); }
   const src = c.createBufferSource(), g = c.createGain();
   src.buffer = SAMPLES[name][0]; src.loop = true; g.gain.value = 0; g.gain.setTargetAtTime(1, t, 0.4);
+  const LP = MUSIC_LOOPS[name];
+  if (LP && Math.abs(src.buffer.duration - LP.dur) < 0.4) { src.loopStart = LP.s; src.loopEnd = LP.e; }
   src.connect(g); g.connect(AU.musicBus); src.start();
   AU.track = { src, g }; AU.trackName = name;
 }

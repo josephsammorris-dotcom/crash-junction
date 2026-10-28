@@ -42,3 +42,4 @@ Cloudflare Workers serves `public/` as a static site and republishes on every pu
 ## Credits
 
 three.js (MIT) and cannon-es (MIT); their licences are in `public/vendor/`.
+Sound effects from Stunt Rally 3 and SuperTuxKart contributors (CC BY / CC BY-SA / CC0): see `public/audio/CREDITS.md`.
