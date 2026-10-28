@@ -33,4 +33,8 @@ head = f'''<!doctype html>
 body_start = src.index('<canvas id="scene"')
 out = head + src[:body_start] + '</head>\n<body>\n' + src[body_start:] + '\n</body>\n</html>\n'
 (root / 'public' / 'index.html').write_text(out)
+# list the sound files so the game fetches only what exists (no 404s for optional sounds)
+import json
+audio = sorted(f.name for f in (root / 'public' / 'audio').iterdir() if f.suffix in ('.mp3', '.ogg', '.wav', '.m4a'))
+(root / 'public' / 'audio' / 'manifest.json').write_text(json.dumps(audio, indent=0))
 print('wrote public/index.html', len(out), 'bytes')
