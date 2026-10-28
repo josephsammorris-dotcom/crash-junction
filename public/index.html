@@ -383,23 +383,6 @@ body.touchmode .tune, body[data-ui="ready"] .tune, body[data-ui="results"] .tune
           <li><i>2</i><div><b>Make one hit</b><span>Plough into the traffic. Nobody can stop in time, and the pile-up grows on its own.</span></div></li>
           <li><i>3</i><div><b>Run up the bill</b><span>Score is damage × vehicles wrecked. Fires, exploding tankers, rollovers and jackknifed semis all add to it.</span></div></li>
         </ol>
-        <div class="keys kb">
-          <span><kbd>←</kbd> <kbd>→</kbd></span><span>Steer (or A / D)</span>
-          <span><kbd>Space</kbd></span><span>Boost (refills)</span>
-          <span><kbd>↓</kbd></span><span>Brake</span>
-          <span><kbd>Enter</kbd></span><span>Finish / next</span>
-        </div>
-        <div class="keys tk">
-          <span><kbd>‹</kbd> <kbd>›</kbd></span><span>Steer</span>
-          <span><kbd>Boost</kbd></span><span>Hold for speed (refills)</span>
-          <span><kbd>Brake</kbd></span><span>Time your arrival</span>
-        </div>
-        <div class="keys pad">
-          <span><kbd>L-stick</kbd></span><span>Steer</span>
-          <span><kbd>RT</kbd> <kbd>A</kbd></span><span>Boost (refills)</span>
-          <span><kbd>LT</kbd> <kbd>X</kbd></span><span>Brake</span>
-          <span><kbd>Start</kbd></span><span>Finish / next</span>
-        </div>
       </section>
       <section class="who">
         <div class="eyebrow">How many players?</div>
@@ -736,8 +719,8 @@ world.solver.iterations = 14;
 world.solver.tolerance = 0.0005;
 // Collision groups: traffic that is still being driven never touches other driven traffic
 // (the lights keep it apart), but anything loose or the player hits everything.
-const G_STATIC = 1, G_DRIVEN = 2, G_LOOSE = 4, G_PLAYER = 8;
-const MASK_ALL = G_STATIC | G_DRIVEN | G_LOOSE | G_PLAYER;
+const G_STATIC = 1, G_DRIVEN = 2, G_LOOSE = 4, G_PLAYER = 8, G_DRIVEN_NS = 16;
+const MASK_ALL = G_STATIC | G_DRIVEN | G_LOOSE | G_PLAYER | G_DRIVEN_NS;
 const MASK_DRIVEN = G_STATIC | G_LOOSE | G_PLAYER;
 const M_GROUND = new CANNON.Material('ground');
 const M_VEH = new CANNON.Material('vehicle');
@@ -1694,7 +1677,16 @@ function makeVehicle(lane, type, idx) {
     world.addBody(tb); bodyToVeh.set(tb, tr); vehicles.push(tr);
     v.trailer = tr;
   }
+  setDrivenGroup(v); if (v.trailer) setDrivenGroup(v.trailer);
   return v;
+}
+// Traffic on the two roads is in separate collision groups. Before your crash they never touch (the lights keep
+// them apart); after it, east-west and north-south traffic physically collide, so nothing can drive through a
+// vehicle stopped across the junction.
+function setDrivenGroup(u) {
+  const ns = u.lane.group === 'NS';
+  u.body.collisionFilterGroup = ns ? G_DRIVEN_NS : G_DRIVEN;
+  u.body.collisionFilterMask = MASK_DRIVEN | (player.crashed ? (ns ? G_DRIVEN : G_DRIVEN_NS) : 0);
 }
 // Rear of a whole rig along its lane (a semi's trailer trails behind the tractor)
 function rearS(u) { return u.s - u.t.L / 2 - (u.trailer ? RIG_GAP + u.trailer.t.L : 0); }
@@ -1793,6 +1785,8 @@ function updateTraffic(dt, live) {
       if (!last || rearS(last) > TYPES[type].L / 2 + 6) {
         const v = makeVehicle(L, type, ls.idx);
         v.s = 0; ls.idx++; v.late = player.crashed;
+        // enter no faster than lets it stop behind the last car in the queue
+        if (last) v.v = Math.min(v.v, last.v + Math.sqrt(2 * 4.5 * Math.max(0, rearS(last) - TYPES[type].L / 2 - 2.5)));
         placeOnPath(v);
         ls.next = L.headway * (TYPES[type].L > 8 || TYPES[type].trailer ? 1.35 : 1) * (player.crashed ? 1.5 : 1);
       }
@@ -2040,30 +2034,45 @@ function applyPunch() {
 
 /* ------------------------------------------------------------------ computer drivers: see the crash, react late, panic */
 let driverRng = rng(2002);
+// Is anything in this driver's path? Each obstacle's real footprint (a long trailer lying across the road counts
+// along its whole length) is tested against a corridor ahead of the driver, as wide as the vehicle plus a margin.
+const _hx = new CANNON.Vec3(), _hz = new CANNON.Vec3();
 function hazardAhead(v, obstacles) {
-  const b = v.body, dir = v.lane.dir;
+  const b = v.body, dir = v.lane.dir, halfW = v.t.W / 2 + 0.6;
   let best = null, bd = Infinity;
   for (const o of obstacles) {
-    const ox = o.body.position.x - b.position.x, oz = o.body.position.z - b.position.z;
-    const along = ox * dir.x + oz * dir.z;
-    if (along <= 0) continue;
-    const lat = ox * dir.z - oz * dir.x; // + = to the driver's left on this lane
-    const oR = Math.max(o.t.W, o.t.L) * 0.45;
-    if (Math.abs(lat) > oR + v.t.W / 2 + 0.5) continue;
-    const d = along - v.t.L / 2 - oR;
-    if (d < bd) { bd = d; best = { o, d, lat }; }
+    if (o === v || o === v.trailer || o.tractor === v) continue;
+    const ob = o.body;
+    ob.quaternion.vmult(LOCAL_X, _hx); ob.quaternion.vmult(LOCAL_Z, _hz);
+    const hx = o.t.W / 2, hz = o.t.L / 2;
+    let minA = Infinity, maxA = -Infinity, minL = Infinity, maxL = -Infinity;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const px = ob.position.x + _hx.x * hx * sx + _hz.x * hz * sz - b.position.x, pz = ob.position.z + _hx.z * hx * sx + _hz.z * hz * sz - b.position.z;
+      const a = px * dir.x + pz * dir.z, l = px * dir.z - pz * dir.x; // l: + = to the driver's left
+      if (a < minA) minA = a; if (a > maxA) maxA = a; if (l < minL) minL = l; if (l > maxL) maxL = l;
+    }
+    if (maxA <= 0 || minL > halfW || maxL < -halfW) continue;
+    const d = minA - v.t.L / 2;
+    if (d < bd) { bd = d; best = { o, d, lat: (minL + maxL) / 2 }; }
   }
   return best;
 }
 function updateDrivers(dt) {
   const obstacles = vehicles.filter((o) => o.state === 'loose');
   if (player.crashed) obstacles.push(player.veh);
+  const crossing = player.crashed ? vehicles.filter((o) => o.state === 'driven' && (o.tractor ? o.tractor.v : o.v) < 4) : null;
   for (const v of vehicles) if (v.state === 'driven') v.hazGap = Infinity;
   if (!obstacles.length) return;
   for (const v of vehicles) {
     if (v.state !== 'driven' || v.tractor) continue;
     if (v.detour) steerDetour(v, dt);
-    const h = hazardAhead(v, obstacles);
+    let h = hazardAhead(v, obstacles);
+    if (crossing) {
+      // stopped traffic from the other road (or another lane) sitting in this driver's path
+      const others = crossing.filter((o) => (o.tractor || o).lane !== v.lane);
+      const h2 = others.length ? hazardAhead(v, others) : null;
+      if (h2 && (!h || h2.d < h.d)) { h = h2; if (v.aware == null && v.seenAt == null) v.aware = true; }
+    }
     if (!h) { v.queuedT = 0; continue; }
     // Once the crash has happened, drivers further back see the smoke and wreckage from a long way off.
     // Most slow down in good time and queue; a few never look up from the radio and plough in.
@@ -2106,7 +2115,8 @@ function detourNeed(v) {
   const L = v.lane, dir = L.dir, rX = -dir.z, rZ = dir.x;
   let need = 0;
   for (const o of allUnits()) {
-    if (o === v || (o.lane === L && o.state === 'driven')) continue; // same-lane traffic is just followed
+    if (o === v || o === v.trailer) continue;
+    if (o.lane === L && o.state === 'driven' && !o.detour && (o.tractor ? o.tractor.s : o.s) < v.s) continue; // queued behind: they follow us
     const ox = o.body.position.x - L.start.x, oz = o.body.position.z - L.start.z;
     const ext = Math.max(o.t.W, o.t.L) * 0.5, os = ox * dir.x + oz * dir.z;
     if (os + ext < v.s - v.t.L - 1 || os - ext > v.s + 22) continue;
@@ -2119,13 +2129,14 @@ function detourNeed(v) {
 function steerDetour(v, dt) {
   const D = v.detour;
   D.t -= dt;
-  if (D.t <= 0) { D.t = 0.5; const n = Math.min(15, detourNeed(v)); D.off = n > 0.5 ? Math.max(n, D.out ? D.off : 0) : 0; }
+  if (D.t <= 0) { D.t = 0.5; const n = detourNeed(v); D.off = n > 15 ? v.off : n > 0.5 ? Math.max(n, D.out ? D.off : 0) : 0; } // no room further out: hold here and wait
   const d = D.off - v.off, step = Math.min(Math.abs(d), 1.6 * dt) * Math.sign(d);
   v.off += step; v.offRate = step / dt;
   D.out = D.off > 0 && v.off < D.off - 0.2;
   if (D.off === 0 && Math.abs(v.off) < 0.05) { v.detour = null; v.off = 0; v.offRate = 0; }
 }
 function panic(v) {
+  if (v.swerve == null) v.swerve = driverRng() < 0.5 ? -1 : 1; // drivers who stopped calmly never picked a side
   makeLoose(v);
   // Slam the brakes, wheels lock, and yank the wheel away from the wreck
   v.panic = { brake: true, steer: 0.5 * v.swerve };
@@ -2335,6 +2346,7 @@ function updateRoll(v, dt) {
 function crash(e) {
   player.crashed = true;
   player.crashTime = runTime;
+  for (const u of vehicles) if (u.state === 'driven') setDrivenGroup(u);
   const b = player.body;
   b.material = M_VEH;
   b.linearDamping = 0.04;
@@ -3448,6 +3460,8 @@ function stepSim(dt) {
   for (const v of vehicles) if (v.state === 'loose') tyres(v, dt);
   if (player.crashed) tyres(player.veh, dt);
   world.step(dt);
+  // safety net: a body whose physics has broken (not-a-number) is removed before it can poison its neighbours
+  for (const v of vehicles) if (v.state !== 'gone' && !Number.isFinite(v.body.position.x + v.body.position.y + v.body.position.z + v.body.quaternion.w)) { (window.__hsxNaN ||= []).push(v.t.label); removeVehicle(v.tractor || v); }
   for (const v of pendingLoose) makeLoose(v);
   pendingLoose = [];
   for (const v of vehicles) if (v.hinge) limitArticulation(v);
@@ -3681,7 +3695,7 @@ idle();
 requestAnimationFrame(frame);
 
 // Hook for automated testing
-window.__hsxTest = { sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
+window.__hsxTest = { get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
 </script>
 
 </body>
