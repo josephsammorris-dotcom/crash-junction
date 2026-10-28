@@ -1,0 +1,10 @@
+// Cloudflare Workers config: serves public/ as a static site.
+// With this repository connected in Cloudflare (Workers & Pages -> Create -> Import a repository),
+// every push to main is published automatically. No build command is needed.
+{
+  "name": "crash-junction",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public"
+  }
+}
