@@ -493,9 +493,9 @@ const CFG = {
   duration: 60, approachMax: 120, boostTime: 10, light0: 16,
   cruise: 34, boost: 58, accel: 10, boostAccel: 20, brakeDecel: 24, minSpeed: 4,
   steerRate: 1.15,
-  damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 0.8, blur: true, rumble: true, warm: 40,
+  damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 1.2, blur: true, rumble: true, warm: 40,
 };
-const MEDALS = { bronze: 6000000, silver: 12000000, gold: 18000000 };
+const MEDALS = { bronze: 2500000, silver: 5000000, gold: 9000000 };
 const fmt = (n) => '$' + Math.round(n).toLocaleString('en-US');
 const fmtShort = (n) => n >= 1e6 ? '$' + (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : '$' + Math.round(n / 1000) + 'K';
 $('#tBronze').textContent = fmtShort(MEDALS.bronze);
@@ -926,9 +926,13 @@ function roadMat(lenAxis) {
       float track = 0.0;
       for (int i = 0; i < 4; i++) { float c = (i < 2 ? 1.0 : -1.0) * (${LANE.toFixed(2)} + (mod(float(i), 2.0) < 0.5 ? -0.75 : 0.75)); track += exp(-pow((acr - c) / 0.32, 2.0)); }
       diffuseColor.rgb *= 1.0 - 0.18 * track;
-      float sandAmt = sandCover(vWp.xz, abs(acr), ${(ROAD_HALF - 2.4).toFixed(2)}, ${(ROAD_HALF + 0.3).toFixed(2)}) * (1.0 - 0.6 * track);
-      diffuseColor.rgb = mix(diffuseColor.rgb, ${SAND_RGB} * (0.9 + 0.2 * vnz(vWp.xz * 3.1)), sandAmt);`).replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 1.0, sandAmt);').replace('void main() {', SAND_GLSL + '\nvoid main() {');
+      // where sand has blown over it the tarmac fades out, so it is the desert itself (same texture, same light) on top
+      float sandAmt = sandCover(vWp.xz, abs(acr), ${(ROAD_HALF - 2.6).toFixed(2)}, ${(ROAD_HALF + 1.2).toFixed(2)}) * (1.0 - 0.6 * track);
+      sandAmt = max(sandAmt, smoothstep(${(ROAD_HALF + 0.4).toFixed(2)}, ${(ROAD_HALF + 1.8).toFixed(2)}, abs(acr)));
+      diffuseColor.a *= 1.0 - smoothstep(0.1, 0.7, sandAmt);
+      diffuseColor.rgb = mix(diffuseColor.rgb, ${SAND_RGB} * 0.9, smoothstep(0.0, 0.45, sandAmt) * 0.7);`).replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 1.0, sandAmt);').replace('void main() {', SAND_GLSL + '\nvoid main() {');
   };
+  m.transparent = true; m.depthWrite = true; m.userData.road = true; // drawn after the opaque desert; fades into it at the edges and under drifts
   m.customProgramCacheKey = () => 'road-' + lenAxis; // each road direction compiles its own shader
   return m;
 }
@@ -954,9 +958,13 @@ function gravelMat(lenAxis, half) {
 }
 const SHOULDER = ROAD_HALF * 2 + 9; // gravel and blown sand either side, fading out into the desert
 function strip(len, wid, mat, x, y, z, alongX, parent = scene) {
+  if (mat.userData.road) wid = ROAD_W;
   const g = new THREE.PlaneGeometry(alongX ? len : wid, alongX ? wid : len); g.rotateX(-Math.PI / 2);
-  const m = new THREE.Mesh(g, mat); m.position.set(x, y, z); m.receiveShadow = true; parent.add(m); return m;
+  const m = new THREE.Mesh(g, mat); m.position.set(x, y, z); m.receiveShadow = true; parent.add(m);
+  if (mat.userData.road) m.renderOrder = 1; else if (mat === paintWhite || mat === paintYellow) m.renderOrder = 2;
+  return m;
 }
+const ROAD_W = ROAD_HALF * 2 + 4; // the tarmac mesh runs a little past the edge and fades into the sand
 // Road paint: worn, slightly glossy
 const wearTex = canvasTex(256, 256, (g, w, h) => {
   const img = g.createImageData(w, h);
@@ -971,25 +979,19 @@ for (const m of [paintWhite, paintYellow]) m.onBeforeCompile = (sh) => {
 {
   const Y = 0.02;
   // East–west highway
-  strip(2400, SHOULDER, gravelMat('x', SHOULDER / 2), 0, 0.006, 0, true);
   strip(2400, ROAD_HALF * 2, roadMat('x'), 0, Y, 0, true);
   // North–south road: flat part, then up the ridge
-  strip(1250, SHOULDER, gravelMat('z', SHOULDER / 2), 0, 0.005, 575, false);
   strip(1200 - ROAD_HALF, ROAD_HALF * 2, roadMat('z'), 0, Y - 0.001, (1200 + ROAD_HALF) / 2, false);
   strip(-HILL_BOT_Z - ROAD_HALF + 0.5, ROAD_HALF * 2, roadMat('z'), 0, Y - 0.001, (HILL_BOT_Z - ROAD_HALF) / 2, false);
-  strip(-HILL_BOT_Z, SHOULDER, gravelMat('z', SHOULDER / 2), 0, 0.005, HILL_BOT_Z / 2, false);
   const rampLen = Math.hypot(HILL_BOT_Z - HILL_TOP_Z, HILL_H);
   const grp = new THREE.Group(); grp.position.set(0, HILL_H / 2, (HILL_TOP_Z + HILL_BOT_Z) / 2);
   grp.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), HILL_ANGLE); scene.add(grp);
   strip(rampLen + 0.4, ROAD_HALF * 2, roadMat('z'), 0, Y, 0, false, grp);
-  strip(rampLen + 0.4, SHOULDER, gravelMat('z', SHOULDER / 2), 0, 0.006, 0, false, grp);
   // across the mesa top: north to the bend, round the butte, and away west to the horizon
   const topLen = HILL_TOP_Z - ROUTE_S2Z, HY = HILL_H + Y;
   strip(topLen + 0.3, ROAD_HALF * 2, roadMat('z'), 0, HY, (HILL_TOP_Z + ROUTE_S2Z) / 2, false);
-  strip(topLen + 0.3, SHOULDER, gravelMat('z', SHOULDER / 2), 0, HILL_H + 0.006, (HILL_TOP_Z + ROUTE_S2Z) / 2, false);
   const westLen = 1200 - ROUTE_R;
   strip(westLen + 0.3, ROAD_HALF * 2, roadMat('xs'), -ROUTE_R - westLen / 2, HY, ROUTE_Z, true);
-  strip(westLen + 0.3, SHOULDER, gravelMat('xs', SHOULDER / 2), -ROUTE_R - westLen / 2, HILL_H + 0.006, ROUTE_Z, true);
   // the bend: a ribbon following the arc (offset measured towards the butte)
   const arc = (off, w, mat, y) => {
     const n = 48, pos = [], idx = [];
@@ -1002,8 +1004,7 @@ for (const m of [paintWhite, paintYellow]) m.onBeforeCompile = (sh) => {
     if (g.attributes.normal.getY(0) < 0) { g.setIndex(idx.map((v, k) => idx[k - (k % 3) + [0, 2, 1][k % 3]])); g.computeVertexNormals(); }
     const m = new THREE.Mesh(g, mat); m.receiveShadow = true; scene.add(m); return m;
   };
-  arc(0, SHOULDER, gravelMat('arc', SHOULDER / 2), HILL_H + 0.006);
-  arc(0, ROAD_HALF * 2, roadMat('arc'), HY);
+  arc(0, ROAD_W, roadMat('arc'), HY).renderOrder = 1;
   // Markings: double yellow centre lines, white edge lines, stop bars
   const lineAlongX = (x0, x1, z, mat, w = 0.12) => strip(x1 - x0, w, mat, (x0 + x1) / 2, Y + 0.012, z, true);
   const lineAlongZ = (z0, z1, x, mat, w = 0.12, parent = scene, y = Y + 0.012) => strip(z1 - z0, w, mat, x, y, (z0 + z1) / 2, false, parent);
@@ -1017,8 +1018,8 @@ for (const m of [paintWhite, paintYellow]) m.onBeforeCompile = (sh) => {
     lineAlongZ(ROUTE_S2Z, HILL_TOP_Z, s * EDGE, paintWhite, 0.15, scene, HILL_H + Y + 0.012);
     strip(westLen, 0.12, paintYellow, -ROUTE_R - westLen / 2, HILL_H + Y + 0.012, ROUTE_Z + s * 0.13, true);
     strip(westLen, 0.15, paintWhite, -ROUTE_R - westLen / 2, HILL_H + Y + 0.012, ROUTE_Z + s * EDGE, true);
-    arc(s * 0.13, 0.12, paintYellow, HILL_H + Y + 0.012);
-    arc(s * EDGE, 0.15, paintWhite, HILL_H + Y + 0.012);
+    arc(s * 0.13, 0.12, paintYellow, HILL_H + Y + 0.012).renderOrder = 2;
+    arc(s * EDGE, 0.15, paintWhite, HILL_H + Y + 0.012).renderOrder = 2;
     lineAlongZ(-rampLen / 2, rampLen / 2, s * 0.13, paintYellow, 0.12, grp, Y + 0.012);
     lineAlongZ(-rampLen / 2, rampLen / 2, s * EDGE, paintWhite, 0.15, grp, Y + 0.012);
   }
@@ -2317,8 +2318,8 @@ function updateDrivers(dt) {
     if (!h) { v.queuedT = 0; continue; }
     // Once the crash has happened, drivers further back see the smoke and wreckage from a long way off.
     // Most slow down in good time and queue; a few never look up from the radio and plough in.
-    if (v.aware == null && v.seenAt == null && v.late && h.d < 75)
-      v.aware = v.v < 8 || driverRng() < 0.82;
+    if (v.aware == null && v.seenAt == null && v.late && h.d < 110)
+      v.aware = v.v < 8 || driverRng() < 0.9;
     if (v.aware) {
       v.hazGap = h.d;
       if (h.d < 0.6 || (v.v * v.v) / (2 * 7) > h.d + 1) { panic(v); continue; } // caught out anyway
@@ -2334,8 +2335,8 @@ function updateDrivers(dt) {
     if (v.seenAt == null) {
       v.seenAt = runTime;
       // Reaction time: most drivers are slow off the mark, lorry and bus drivers slower still
-      v.react = 0.8 + driverRng() * 0.6 + (v.t.L > 8 ? 0.4 : 0);
-      if (driverRng() < 0.3) v.react = Infinity; // three in ten never look up
+      v.react = 0.5 + driverRng() * 0.45 + (v.t.L > 8 ? 0.3 : 0);
+      if (driverRng() < 0.18) v.react = Infinity; // a few never look up
       v.swerve = (h.lat > 0.3 ? -1 : h.lat < -0.3 ? 1 : (driverRng() < 0.5 ? -1 : 1));
     }
     if (runTime - v.seenAt >= v.react || h.d < 1) panic(v);
@@ -2465,15 +2466,15 @@ function bump(e) {
 // from their slip angle up to a peak and then let go (a slide), share that grip with braking and drive (brake into
 // a corner and it washes wide; lift and the nose bites), and the load shifts forward under braking and back under
 // power. Speed-sensitive steering, all-wheel drive, ABS. Sand has less grip and a little drag.
-const CAR = { m: 1350, a: 1.2, b: 1.4, h: 0.4, Iz: 1950, muRoad: 1.05, muSand: 0.78, sandDrag: 0.9, steerMax: 0.5, steerRate: 2.4, Bf: 10, Br: 15, C: 1.3, esc: 2.2 };
+const CAR = { m: 1350, a: 1.2, b: 1.4, h: 0.4, Iz: 1950, muRoad: 1.3, muSand: 0.95, sandDrag: 0.9, steerMax: 0.55, steerRate: 4.5, Bf: 10, Br: 15, C: 1.3, esc: 3, assist: 2.5 };
 const pac = (al, D, B) => D * Math.sin(CAR.C * Math.atan(B * al));
 function driveCar(dt, inp, boosting) {
   const P = player, K = CAR, pb = P.body, L = K.a + K.b, g = 9.82;
   const sand = !onRoad(pb.position.x, pb.position.z);
   const mu = sand ? K.muSand : K.muRoad;
   // speed-sensitive steering: lock at a crawl, a few degrees at 80 mph; the wheel winds on and off at a finite rate
-  const uu = Math.max(1, P.u * P.u), dMax = Math.min(K.steerMax, 0.05 + (K.a + K.b) * 13 / uu); // full lock asks a little more than the tyres can give
-  const sr = 0.4 + K.steerRate / (1 + Math.max(0, P.u) / 8);
+  const uu = Math.max(1, P.u * P.u), dMax = Math.min(K.steerMax, 0.07 + (K.a + K.b) * 26 / uu); // full lock asks a little more than the tyres can give
+  const sr = 1.2 + K.steerRate / (1 + Math.max(0, P.u) / 14);
   P.delta += THREE.MathUtils.clamp(inp.steer * dMax - P.delta, -sr * dt, sr * dt);
   P.steerIn = P.delta / K.steerMax;
   const shaken = runTime - P.bumpT < 0.6;
@@ -2506,6 +2507,9 @@ function driveCar(dt, inp, boosting) {
     // a light stability system: lets the tail step out, but catches a yaw rate well beyond what the grip allows
     const rLim = Math.abs(u * d / L) + mu * g / ue * 0.6;
     if (Math.abs(r) > rLim) dr -= Math.sign(r) * (Math.abs(r) - rLim) * K.esc * 10;
+    // arcade help: the car turns towards where you point it a bit more eagerly than the tyres alone would
+    const rWant = THREE.MathUtils.clamp(u * d / L, -rLim, rLim);
+    dr += (rWant - r) * K.assist * Math.min(1, ue / 10);
     P.u += du * h; P.vl += dv * h; P.r += dr * h; P.yaw += P.r * h;
     if (Math.abs(P.u) < 3) { const k = Math.exp(-h * 6); P.vl *= k; P.r *= Math.exp(-h * 3); } // no spinning on the spot
     ax = du - v * r; ay = dv + u * r;
@@ -3749,7 +3753,7 @@ function replayCamera(dtReal) {
   _rfw.set(Math.sin(rec.crashYaw), 0, Math.cos(rec.crashYaw));
   if (t < rec.crashT - 1.0) {
     const fwd = _fwd.set(Math.sin(player.yaw), 0, Math.cos(player.yaw));
-    _tgtPos.set(pb.x - fwd.x * 6.5 + fwd.z * 1.2, pb.y + 1.6, pb.z - fwd.z * 6.5 - fwd.x * 1.2);
+    _tgtPos.set(pb.x - fwd.x * 10 + fwd.z * 1.6, pb.y + 3.0, pb.z - fwd.z * 10 - fwd.x * 1.6);
     _tgtLook.set(pb.x + fwd.x * 10, pb.y + 0.5, pb.z + fwd.z * 10);
     cam.pos.copy(_tgtPos); cam.look.copy(_tgtLook);
     replay.mode = 'chase';
@@ -3757,8 +3761,8 @@ function replayCamera(dtReal) {
     if (replay.mode !== 'track') {
       replay.mode = 'track';
       const s = replay.side;
-      replay.trackPos = new THREE.Vector3(rec.crashPos.x + _rfw.x * 5 + _rfw.z * 8 * s, 0, rec.crashPos.z + _rfw.z * 5 - _rfw.x * 8 * s);
-      replay.trackPos.y = groundY(replay.trackPos.x, replay.trackPos.z) + 1.1;
+      replay.trackPos = new THREE.Vector3(rec.crashPos.x + _rfw.x * 9 + _rfw.z * 15 * s, 0, rec.crashPos.z + _rfw.z * 9 - _rfw.x * 15 * s);
+      replay.trackPos.y = groundY(replay.trackPos.x, replay.trackPos.z) + 3.2;
     }
     cam.pos.copy(replay.trackPos); cam.look.lerp(_rl.copy(pb).setY(pb.y + 0.3), Math.min(1, dtReal * 10));
     ts = t > rec.crashT - 0.45 && t < rec.crashT + 1.4 ? 0.25 : 0.55;
@@ -3770,10 +3774,10 @@ function replayCamera(dtReal) {
       let best = null;
       for (const e of replayEvents) if (!best || EVENT_KIND[e.kind].prio > EVENT_KIND[best.kind].prio) best = e;
       if (best && (!replay.shot || replay.shot.kind === 'orbit' || t > replay.shot.until)) {
-        const K = EVENT_KIND[best.kind], a = Math.random() * Math.PI * 2, d = K.dist * 0.75;
+        const K = EVENT_KIND[best.kind], a = Math.random() * Math.PI * 2, d = K.dist * 1.35 + 6;
         replay.shot = { kind: best.kind, u: best.u, pos: best.pos.clone(), until: t + K.hold * 0.8, slowUntil: best.kind === 'boom' || best.kind === 'roll' ? t + 1.6 : 0,
           cam: new THREE.Vector3(best.pos.x + Math.sin(a) * d, 0, best.pos.z + Math.cos(a) * d) };
-        replay.shot.cam.y = groundY(replay.shot.cam.x, replay.shot.cam.z) + (best.kind === 'boom' ? 6 : 2.2);
+        replay.shot.cam.y = groundY(replay.shot.cam.x, replay.shot.cam.z) + (best.kind === 'boom' ? 11 : 5.5);
         replayEvents.length = 0; cut = true;
       } else if (!replay.shot || replay.shot.kind !== 'orbit') {
         replay.shot = { kind: 'orbit', until: t + 4, ang: Math.random() * Math.PI * 2 }; cut = true;
@@ -3783,7 +3787,7 @@ function replayCamera(dtReal) {
     if (S.kind === 'orbit') {
       const spread = actionFrame();
       S.ang += dtReal * 0.22;
-      const R = THREE.MathUtils.clamp(14 + spread * 1.4, 18, 52) * (camera.aspect < 1.2 ? Math.pow(1.2 / camera.aspect, 0.6) : 1);
+      const R = THREE.MathUtils.clamp(20 + spread * 1.6, 28, 64) * (camera.aspect < 1.2 ? Math.pow(1.2 / camera.aspect, 0.6) : 1);
       _tgtPos.set(_ac.x + Math.sin(S.ang) * R, _ac.y + R * 0.55, _ac.z + Math.cos(S.ang) * R);
       if (cut) { cam.pos.copy(_tgtPos); cam.look.copy(_ac); } else { cam.pos.lerp(_tgtPos, 1 - Math.exp(-dtReal * 2)); cam.look.lerp(_ac, 1 - Math.exp(-dtReal * 2)); }
     } else {
