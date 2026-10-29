@@ -3001,8 +3001,8 @@ function updateHud() {
   bm.classList.toggle('earn', !!player.oncoming && !player.crashed && !ready);
   bm.classList.toggle('ready', ready);
   bm.classList.toggle('firing', !!player.boosting);
-  $('#tBoost').classList.toggle('ready', ready); $('#tBoost').classList.toggle('empty', !ready && !player.boosting);
-  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.boosting ? 'Boosting!' : ready ? 'Boost ready · press boost' : player.oncoming ? 'Oncoming · filling boost' : `Boost ${Math.floor(player.boost * 100)}% · near misses fill it`;
+  $('#tBoost').classList.toggle('ready', ready); $('#tBoost').classList.toggle('empty', player.boost <= 0.005 && !player.boosting);
+  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.boosting ? 'Boosting!' : ready ? 'Boost full · hold to use' : player.oncoming ? 'Oncoming · filling boost' : player.boost > 0.005 ? `Boost ${Math.floor(player.boost * 100)}% · hold to use` : 'Boost empty · near misses fill it';
   const ew = lightState('EW', lightTime), ns = lightState('NS', lightTime);
   const col = { G: '#3DDC6A', A: '#FFB020', R: '#FF3B30' };
   $('#lightEW').innerHTML = `E–W <span style="color:${col[ew]}">●</span>`;
@@ -3780,7 +3780,7 @@ function buildRun(colour) {
   lightTime = CFG.light0; // phased so the cross traffic is already flowing when you get to the junction
   score = { damage: 0, wrecks: 0 };
   runTime = 0; lastHitTime = 0; lastFireTime = 0; acc = 0; timeScale = 1; blurState.pulse = 0; blurState.last = -9;
-  player.boost = 0; player.boosting = false; player.boostHeld = false; _apS = START_X + 720;
+  player.boost = 0; player.boosting = false; _apS = START_X + 720;
   // clear your lane where you start
   for (const v of vehicles) if (v.state === 'driven' && !v.tractor && v.lane.id === 'dn' && Math.hypot(v.body.position.x - START_X, v.body.position.z - ROUTE_Z) < 35) removeVehicle(v);
   syncMeshes();
@@ -3794,7 +3794,7 @@ function startRun() {
   setSection('drive');
   hideCards();
   setUI('running');
-  $('#hint').textContent = 'Fill the boost bar with near misses and wrong-side driving, then fire it when you choose.';
+  $('#hint').textContent = 'Fill the boost bar with near misses and wrong-side driving, then hold boost whenever you like.';
   $('#hint').hidden = false;
   setTimeout(() => { if (state === 'running' && !player.crashed) $('#hint').hidden = true; }, 4500);
   cam.pos.set(START_X - 12, HILL_H + 6, ROUTE_Z + LANE); cam.look.set(START_X + 20, HILL_H, ROUTE_Z + LANE);
@@ -3845,12 +3845,9 @@ function stepSim(dt) {
   if (!player.crashed && state === 'running') {
     const inp = autopilot ? autopilot(runTime, player) : input();
     if (!replay.on) rec.inputs.push([inp.steer, inp.brake ? 1 : 0, inp.boost ? 1 : 0]);
-    // Boost fires only from a full bar; one press burns the lot (braking cuts it short)
-    const press = !!inp.boost && !player.boostHeld;
-    player.boostHeld = !!inp.boost;
-    let boosting = player.boosting;
-    if (!boosting && press && player.boost >= 1 && !inp.brake) { boosting = true; sfxWhoosh(); }
-    if (boosting && (inp.brake || player.boost <= 0)) boosting = false;
+    // Boost works while the button is held, for as long as there's something in the bar
+    const boosting = !!inp.boost && player.boost > 0.005 && !inp.brake;
+    if (boosting && !player.boosting) sfxWhoosh();
     player.boosting = boosting;
     let target = CFG.cruise;
     if (boosting) { target = CFG.boost; player.boost = Math.max(0, player.boost - dt / CFG.boostTime); }
