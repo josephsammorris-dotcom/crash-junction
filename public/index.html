@@ -945,6 +945,8 @@ function roadMat(lenAxis) {
       // where sand has blown over it the tarmac fades out, so it is the desert itself (same texture, same light) on top
       float sandAmt = sandCover(vWp.xz, abs(acr), ${(ROAD_HALF - 2.6).toFixed(2)}, ${(ROAD_HALF + 1.2).toFixed(2)}) * (1.0 - 0.6 * track);
       sandAmt = max(sandAmt, smoothstep(${(ROAD_HALF + 0.4).toFixed(2)}, ${(ROAD_HALF + 1.8).toFixed(2)}, abs(acr)));
+      // where the two roads cross, both stay solid tarmac right across (no sand showing through in the junction)
+      sandAmt *= smoothstep(${(ROAD_HALF + 0.5).toFixed(2)}, ${(ROAD_HALF + 7).toFixed(2)}, abs(${lenAxis === 'x' ? 'vWp.x' : lenAxis === 'z' ? 'vWp.z' : '1000.0'}));
       diffuseColor.a *= 1.0 - smoothstep(0.1, 0.7, sandAmt);
       diffuseColor.rgb = mix(diffuseColor.rgb, ${SAND_RGB} * 0.9, smoothstep(0.0, 0.45, sandAmt) * 0.7);`).replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 1.0, sandAmt);').replace('void main() {', SAND_GLSL + '\nvoid main() {');
   };
