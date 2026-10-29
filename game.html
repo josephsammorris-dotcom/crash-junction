@@ -121,7 +121,12 @@ body[data-ui="ready"] .tune-toggle, body[data-ui="results"] .tune-toggle, body[d
 
 /* Touch controls */
 .touch { position: fixed; z-index: 7; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 12px; align-items: flex-end; }
-.touch.left { left: calc(14px + env(safe-area-inset-left, 0px)); }
+.steerpad { left: 0; bottom: 0; top: 30vh; width: 62vw; display: block; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.steer-ring { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(244,241,232,.28); background: rgba(22,25,33,.22); opacity: 0; transition: opacity .15s; pointer-events: none; }
+.steer-ring i { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; background: rgba(244,241,232,.55); }
+.steerpad.active .steer-ring { opacity: 1; }
+.steer-tip { position: absolute; left: calc(22px + env(safe-area-inset-left, 0px)); bottom: calc(26px + env(safe-area-inset-bottom, 0px)); font: 700 11px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; color: rgba(244,241,232,.6); pointer-events: none; }
+.steerpad.used .steer-tip { display: none; }
 .touch.right { right: calc(14px + env(safe-area-inset-right, 0px)); }
 .tbtn { width: 74px; height: 74px; border-radius: 50%; border: 2px solid rgba(244,241,232,.35); background: rgba(22,25,33,.55); color: var(--ink); font: 800 14px/1 var(--font-display); letter-spacing: .04em; text-transform: uppercase; display: grid; place-items: center; touch-action: none; padding: 0; -webkit-tap-highlight-color: transparent; }
 .tbtn svg { width: 30px; height: 30px; fill: currentColor; }
@@ -129,7 +134,7 @@ body[data-ui="ready"] .tune-toggle, body[data-ui="results"] .tune-toggle, body[d
 .tbtn.down { transform: scale(.94); background: rgba(244,241,232,.25); }
 .tbtn.boost.down { background: #fff3c4; }
 body.touchmode .hud-bl { bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
-body.touchmode .hint { bottom: auto; top: calc(118px + env(safe-area-inset-top, 0px)); }
+body.touchmode .hint { bottom: auto; top: calc(150px + env(safe-area-inset-top, 0px)); }
 body.touchmode .finish-btn { min-width: min(320px, 70vw); padding: 16px 22px; font-size: 16px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); }
 
 /* Tune panel: a sheet above everything, with its own Done button */
@@ -272,7 +277,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
   .feed div:nth-child(n+4) { display: none; }
   .hud-bl, body.touchmode .hud-bl { top: calc(8px + env(safe-area-inset-top, 0px)); bottom: auto; left: calc(12px + env(safe-area-inset-left, 0px)); }
   .speedo .n { font-size: 28px; }
-  body.touchmode .hint, .hint { top: calc(64px + env(safe-area-inset-top, 0px)); bottom: auto; font-size: 13px; }
+  body.touchmode .hint, .hint { top: calc(132px + env(safe-area-inset-top, 0px)); bottom: auto; font-size: 13px; }
   .demo-badge { top: calc(64px + env(safe-area-inset-top, 0px)); }
   .flash { top: 40%; font-size: 72px; }
   .card.wide { width: min(880px, 100%); grid-template-columns: 1.05fr 1fr; gap: 22px; align-items: start; padding: 18px 20px; }
@@ -340,10 +345,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
 <button class="finish-btn skip-btn" id="skipBtn" hidden>Skip replay <kbd class="kb">Enter</kbd><kbd class="pad">A</kbd></button>
 <button class="finish-btn" id="finishBtn" hidden>Finish <kbd class="kb">Enter</kbd><kbd class="pad">A</kbd></button>
 
-<div class="touch left" id="touchL" hidden>
-  <button class="tbtn" id="tLeft" aria-label="Steer left"><svg viewBox="0 0 24 24"><path d="M15.5 4 7 12l8.5 8 1.5-1.5L10 12l7-6.5z"/></svg></button>
-  <button class="tbtn" id="tRight" aria-label="Steer right"><svg viewBox="0 0 24 24"><path d="M8.5 4 17 12l-8.5 8L7 18.5 14 12 7 5.5z"/></svg></button>
-</div>
+<div class="steerpad touch" id="touchL" hidden aria-label="Drag left or right to steer"><div class="steer-ring" id="steerRing"><i id="steerDot"></i></div><span class="steer-tip">Drag to steer</span></div>
 <div class="touch right" id="touchR" hidden>
   <button class="tbtn" id="tBrake" aria-label="Brake">Brake</button>
   <button class="tbtn boost" id="tBoost" aria-label="Boost">Boost</button>
@@ -490,7 +492,7 @@ try {
 /* ------------------------------------------------------------------ config */
 const STEP = 1 / 60;
 const CFG = {
-  duration: 60, approachMax: 120, boostTime: 10, light0: 16,
+  duration: 60, approachMax: 120, boostTime: 10, boostRegen: 35, light0: 16,
   cruise: 34, boost: 58, accel: 10, boostAccel: 20, brakeDecel: 24, minSpeed: 4,
   steerRate: 1.15,
   damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 1.2, blur: true, rumble: true, warm: 40,
@@ -675,8 +677,9 @@ function updateBlur(dt) {
   blurState.pulse *= Math.exp(-dt * 4.5);
   let amt = blurState.pulse, cx = blurState.cx, cy = blurState.cy;
   if (state === 'running' && !player.crashed) {
-    const sp = THREE.MathUtils.clamp((player.speed - 30) / 28, 0, 1);
-    if (sp * (replay.on ? 0.1 : 0.075) > amt) { amt = sp * (replay.on ? 0.1 : 0.075); cx = 0.5; cy = 0.56; }
+    // a trace of motion blur from 60 mph, building steadily the faster you go
+    const sp = Math.pow(THREE.MathUtils.clamp((player.speed - 26.8) / 31, 0, 1), 1.25), top = replay.on ? 0.11 : 0.1;
+    if (sp * top > amt) { amt = sp * top; cx = 0.5; cy = 0.56; }
   } else if (state === 'running' && replay.on) {
     // in the replay, blur streams out from whatever the camera is following, by how fast it's moving
     const u = replay.mode === 'track' ? player.veh : replay.shot && replay.shot.u;
@@ -1425,6 +1428,23 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   lamps(parts, inner, L / 2 - 0.1, -L / 2 + 0.07, B + lerpT(P.top, 0.93) - 0.07, B + lerpT(P.top, -0.95) - 0.08, W * 0.33, W * 0.36);
   part(inner, new THREE.BoxGeometry(W * 0.9, 0.12, L * 0.8), underMat, 0, B + P.bottom + 0.04, 0);
   for (const az of P.axles) for (const s of [-1, 1]) makeWheel(parts, inner, s * (W / 2 - 0.16), B + P.r, az, P.r, type === 'pickup' ? 0.3 : 0.24, az > 0);
+  if (isPlayer) {
+    const dark = solidPaint('#16181c'), yT = B + lerpT(P.top, -0.9);
+    // rear wing on two uprights
+    part(inner, new RoundedBoxGeometry(W * 0.94, 0.045, 0.34, 2, 0.015), dark, 0, yT + 0.21, -L / 2 + 0.28).rotation.x = -0.08;
+    for (const s of [-1, 1]) { part(inner, new THREE.BoxGeometry(0.05, 0.2, 0.14), dark, s * W * 0.33, yT + 0.1, -L / 2 + 0.3); part(inner, new THREE.BoxGeometry(0.03, 0.12, 0.36), dark, s * W * 0.47, yT + 0.22, -L / 2 + 0.28); }
+    // front splitter and side skirts
+    part(inner, new THREE.BoxGeometry(W * 0.96, 0.035, 0.24), trimMat, 0, noseY - 0.13, L / 2 - 0.04);
+    for (const s of [-1, 1]) part(inner, new THREE.BoxGeometry(0.07, 0.1, L * 0.46), trimMat, s * (W / 2 - 0.01), B + P.bottom + 0.07, -0.05);
+    // twin exhausts poking out under the rear bumper, with sooty inner pipes
+    parts.exhaust = [];
+    const yE = noseY - 0.1, zE = -L / 2 + 0.02, soot = new THREE.MeshStandardMaterial({ color: '#0c0c0d', roughness: 0.9 });
+    for (const s of [-1, 1]) {
+      const pipe = part(inner, new THREE.CylinderGeometry(0.065, 0.065, 0.3, 16), chrome, s * W * 0.24, yE, zE); pipe.rotation.x = Math.PI / 2;
+      const core = part(inner, new THREE.CircleGeometry(0.05, 14), soot, s * W * 0.24, yE, zE - 0.152); core.rotation.y = Math.PI;
+      const tip = new THREE.Object3D(); tip.position.set(s * W * 0.24, yE, zE - 0.2); inner.add(tip); parts.exhaust.push(tip);
+    }
+  }
   return hull;
 }
 function buildTruck(type, colour, t, parts, inner) {
@@ -2484,20 +2504,23 @@ function driveCar(dt, inp, boosting) {
   P.delta += THREE.MathUtils.clamp(inp.steer * dMax - P.delta, -sr * dt, sr * dt);
   P.steerIn = P.delta / K.steerMax;
   const shaken = runTime - P.bumpT < 0.6;
-  const target = inp.brake ? CFG.minSpeed : boosting ? CFG.boost : CFG.cruise;
+  const target = boosting ? CFG.boost : CFG.cruise, throttle = inp.throttle || boosting;
+  const reverse = inp.brake && P.u < 0.6; // hold brake when stopped to back up
   const n = 4, h = dt / n;
   let ay = 0, ax = 0, slip = 0;
   for (let i = 0; i < n; i++) {
     const u = P.u, v = P.vl, r = P.r, d = P.delta, ue = Math.max(Math.abs(u), 3);
     // engine and brakes (the car always rolls on at a crawl, never stops dead)
     let Fx;
-    if (inp.brake && u > CFG.minSpeed) Fx = -K.m * 10;
+    if (reverse) Fx = u > -6 ? -K.m * 3.5 : 0;
+    else if (inp.brake) Fx = -K.m * 10 * Math.min(1, u / 1.5 + 0.2);
+    else if (!throttle) Fx = -K.m * (0.35 + 0.004 * u * u / 10) * Math.sign(u); // lift off: engine braking and drag
     else if (u < target && !shaken) {
       Fx = Math.min(K.m * (boosting ? 11 : 6), K.m * 2.2 * (target - u));
       const sl = Math.abs(Math.atan2(v - K.b * r, ue)); if (sl > 0.1) Fx *= Math.max(0.15, 1 - (sl - 0.1) * 6); // traction control eases off in a slide
     }
     else Fx = -K.m * Math.min(2.5, 0.5 * Math.max(0, u - target));
-    if (sand && u > 1) Fx -= K.m * K.sandDrag;
+    if (sand && Math.abs(u) > 1) Fx -= K.m * K.sandDrag * Math.sign(u);
     // weight transfer from the last step's acceleration
     const Fzf = K.m * g * K.b / L - K.m * (P.ax || 0) * K.h / L, Fzr = K.m * g * K.a / L + K.m * (P.ax || 0) * K.h / L;
     let Fxf = Fx > 0 ? Fx * 0.6 : Fx * 0.8, Fxr = Fx - Fxf;
@@ -2517,7 +2540,9 @@ function driveCar(dt, inp, boosting) {
     const rWant = THREE.MathUtils.clamp(u * d / L, -rLim, rLim);
     dr += (rWant - r) * K.assist * Math.min(1, ue / 10);
     P.u += du * h; P.vl += dv * h; P.r += dr * h; P.yaw += P.r * h;
-    if (Math.abs(P.u) < 3) { const k = Math.exp(-h * 6); P.vl *= k; P.r *= Math.exp(-h * 3); } // no spinning on the spot
+    if (P.u < 0) { P.r = P.u * d / L; P.vl *= Math.exp(-h * 8); } // reversing: simple, no slides
+    else if (Math.abs(P.u) < 3) { const k = Math.exp(-h * 6); P.vl *= k; P.r *= Math.exp(-h * 3); } // no spinning on the spot
+    if (!throttle && !reverse && Math.abs(P.u) < 0.15 && Math.sign(P.u) !== Math.sign(Fx || 1)) P.u = 0;
     ax = du - v * r; ay = dv + u * r;
     slip = Math.max(Math.abs(v - K.b * r), Math.abs(v + K.a * r - u * Math.tan(d)));
   }
@@ -3154,7 +3179,7 @@ function updateHud() {
 
 /* ------------------------------------------------------------------ input */
 const keys = new Set();
-const touch = { left: false, right: false, brake: false, boost: false };
+const touch = { steer: 0, brake: false, boost: false };
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') setPadMode(false);
   if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'text') return; // typing a name
@@ -3184,7 +3209,22 @@ function bindTouch(id, prop) {
   el.addEventListener('pointercancel', off);
   el.addEventListener('lostpointercapture', off);
 }
-bindTouch('#tLeft', 'left'); bindTouch('#tRight', 'right'); bindTouch('#tBrake', 'brake'); bindTouch('#tBoost', 'boost');
+bindTouch('#tBrake', 'brake'); bindTouch('#tBoost', 'boost');
+// Drag to steer: put a thumb down anywhere on the left of the screen and slide; the further, the more lock
+{
+  const padEl = $('#touchL'), ring = $('#steerRing'), dot = $('#steerDot');
+  let id = null, x0 = 0, y0 = 0;
+  const span = () => Math.max(50, Math.min(window.innerWidth * 0.13, 110));
+  padEl.addEventListener('pointerdown', (e) => { e.preventDefault(); id = e.pointerId; x0 = e.clientX; y0 = e.clientY; padEl.classList.add('active', 'used'); ring.style.left = x0 + 'px'; ring.style.top = y0 + 'px'; dot.style.transform = ''; try { padEl.setPointerCapture(id); } catch (_) {} });
+  padEl.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== id) return;
+    const d = THREE.MathUtils.clamp((e.clientX - x0) / span(), -1, 1);
+    touch.steer = -Math.sign(d) * Math.pow(Math.abs(d), 1.3); // a little softer near the centre
+    dot.style.transform = `translateX(${d * 38}px)`;
+  });
+  const end = (e) => { if (e.pointerId !== id) return; id = null; touch.steer = 0; padEl.classList.remove('active'); };
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) padEl.addEventListener(ev, end);
+}
 function enableTouch() {
   document.body.classList.add('touchmode');
   $('#touchL').hidden = false; $('#touchR').hidden = false;
@@ -3194,18 +3234,21 @@ window.addEventListener('touchstart', enableTouch, { once: true, passive: true }
 window.addEventListener('pointerdown', () => setPadMode(false), { passive: true });
 
 function input() {
-  const left = keys.has('arrowleft') || keys.has('a') || touch.left;
-  const right = keys.has('arrowright') || keys.has('d') || touch.right;
+  const left = keys.has('arrowleft') || keys.has('a');
+  const right = keys.has('arrowright') || keys.has('d');
+  // phones accelerate for you; on a keyboard or controller you drive the throttle yourself
+  const auto = document.body.classList.contains('touchmode') && !document.body.classList.contains('padmode');
   return {
-    steer: THREE.MathUtils.clamp((left ? 1 : 0) - (right ? 1 : 0) + pad.steer, -1, 1),
+    steer: THREE.MathUtils.clamp((left ? 1 : 0) - (right ? 1 : 0) + pad.steer + touch.steer, -1, 1),
+    throttle: auto || keys.has('arrowup') || keys.has('w') || pad.throttle,
     brake: keys.has('arrowdown') || keys.has('s') || touch.brake || pad.brake,
-    boost: keys.has(' ') || keys.has('arrowup') || keys.has('w') || touch.boost || pad.boost,
+    boost: keys.has(' ') || keys.has('shift') || touch.boost || pad.boost,
   };
 }
 let autopilot = null; // used by automated tests only
 
 /* ------------------------------------------------------------------ game controllers (standard mapping: Xbox, PlayStation, Switch Pro, most others) */
-// Driving: left stick or d-pad steers, RT / A boost, LT / X brake. Menus: d-pad or stick moves between buttons,
+// Driving: left stick or d-pad steers, RT accelerates, A / RB boost, LT / X brake. Menus: d-pad or stick moves between buttons,
 // A presses, B goes back, Start starts / finishes / retries. Rumble on your crash, big impacts and explosions.
 const pad = { steer: 0, boost: false, brake: false, prev: [], idx: -1, navT: 0, navDir: 0 };
 function setPadMode(on) {
@@ -3251,7 +3294,7 @@ function readPad(dtReal) {
   const gps = navigator.getGamepads ? navigator.getGamepads() : [];
   let gp = null;
   for (const g of gps) if (g && g.connected) { gp = g; break; }
-  if (!gp) { pad.steer = 0; pad.boost = pad.brake = false; pad.idx = -1; return; }
+  if (!gp) { pad.steer = 0; pad.boost = pad.brake = pad.throttle = false; pad.idx = -1; return; }
   pad.idx = gp.index;
   const btn = (i) => !!gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.35);
   const now = gp.buttons.map((_, i) => btn(i)), before = pad.prev;
@@ -3266,7 +3309,7 @@ function readPad(dtReal) {
   const layer = openLayer();
   if (layer) {
     // menus
-    pad.steer = 0; pad.boost = pad.brake = false;
+    pad.steer = 0; pad.boost = pad.brake = pad.throttle = false;
     const dir = now[12] || now[14] || ay < -0.6 || ax < -0.6 ? -1 : now[13] || now[15] || ay > 0.6 || ax > 0.6 ? 1 : 0;
     const el = document.activeElement, isRange = el && el.type === 'range' && layer.contains(el);
     const horiz = now[14] || now[15] || Math.abs(ax) > 0.6;
@@ -3290,7 +3333,8 @@ function readPad(dtReal) {
   }
   // driving
   pad.steer = THREE.MathUtils.clamp(-ax + (now[14] ? 1 : 0) - (now[15] ? 1 : 0), -1, 1);
-  pad.boost = now[7] || now[0] || now[5];
+  pad.throttle = now[7] || (gp.buttons[7] && gp.buttons[7].value > 0.15);
+  pad.boost = now[0] || now[5];
   pad.brake = now[6] || now[2] || now[4];
   if (replay.on && (hit(0) || hit(1) || hit(9))) finishReplay();
   else if (state === 'running' && !finishBtn.hidden && (hit(9) || hit(0))) endRun('Finished');
@@ -3801,7 +3845,7 @@ function focusTarget(out) {
 /* ------------------------------------------------------------------ replay: the run is re-simulated exactly (same seeds, same inputs) and shot like a highlight reel */
 const rec = { inputs: [], crashT: 0, endT: 0, crashPos: new THREE.Vector3(), crashYaw: 0, col: '#F2B705', valid: false };
 const replay = { on: false, k: 0, shot: null, nextCut: 0, side: 1 };
-function replayPilot() { const r = rec.inputs[replay.k++] || rec.inputs[rec.inputs.length - 1] || [0, 0, 0]; return { steer: r[0], brake: !!r[1], boost: !!r[2] }; }
+function replayPilot() { const r = rec.inputs[replay.k++] || rec.inputs[rec.inputs.length - 1] || [0, 0, 0, 1]; return { steer: r[0], brake: !!r[1], boost: !!r[2], throttle: r[3] !== 0 }; }
 function startReplay() {
   if (!rec.valid) return;
   hideCards();
@@ -3936,7 +3980,8 @@ function startRun() {
   setSection('drive');
   hideCards();
   setUI('running');
-  $('#hint').textContent = 'You have 10 seconds of boost. Hold boost to use it, and pick your moment.';
+  const tm = document.body.classList.contains('touchmode') && !document.body.classList.contains('padmode'), pm = document.body.classList.contains('padmode');
+  $('#hint').textContent = tm ? 'Drag on the left to steer. Hold Boost for speed; it slowly refills.' : pm ? 'RT to accelerate, LT to brake, A for boost (it slowly refills).' : '↑ to accelerate, ↓ to brake and reverse, Space for boost (it slowly refills).';
   $('#hint').hidden = false;
   setTimeout(() => { if (state === 'running' && !player.crashed) $('#hint').hidden = true; }, 4500);
   cam.pos.set(START_X - 12, HILL_H + 6, ROUTE_Z + LANE); cam.look.set(START_X + 20, HILL_H, ROUTE_Z + LANE);
@@ -3986,12 +4031,14 @@ function stepSim(dt) {
   const pb = player.body;
   if (!player.crashed && state === 'running') {
     const inp = autopilot ? autopilot(runTime, player) : input();
-    if (!replay.on) rec.inputs.push([inp.steer, inp.brake ? 1 : 0, inp.boost ? 1 : 0]);
+    if (inp.throttle === undefined) inp.throttle = true; // test autopilots
+    if (!replay.on) rec.inputs.push([inp.steer, inp.brake ? 1 : 0, inp.boost ? 1 : 0, inp.throttle ? 1 : 0]);
     // Boost works while the button is held, for as long as there's something in the bar
     const boosting = !!inp.boost && player.boost > 0.005 && !inp.brake;
     if (boosting && !player.boosting) sfxWhoosh();
     player.boosting = boosting;
-    if (boosting) player.boost = Math.max(0, player.boost - dt / CFG.boostTime);
+    if (boosting) { player.boost = Math.max(0, player.boost - dt / CFG.boostTime); player.boostIdle = 0; }
+    else if ((player.boostIdle = (player.boostIdle || 0) + dt) > 1.5) player.boost = Math.min(1, player.boost + dt / CFG.boostRegen); // creeps back after a pause
     driveCar(dt, inp, boosting);
     const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
     pb.velocity.x = fx * player.u + fz * player.vl;
@@ -4107,6 +4154,23 @@ function syncMeshes(a = 1) {
   for (const f of fallen) { f.grp.position.copy(f.body.position); f.grp.quaternion.copy(f.body.quaternion); }
   updateShellClips();
 }
+const _ex = new THREE.Vector3();
+let smokeT = 0;
+function exhaustFlames(dt) {
+  const fx = Math.sin(player.drawYaw ?? player.yaw), fz = Math.cos(player.drawYaw ?? player.yaw), vb = player.body.velocity;
+  smokeT -= dt;
+  for (const tip of player.veh.parts.exhaust) {
+    tip.getWorldPosition(_ex);
+    for (let k = 0; k < 2; k++) {
+      const j = () => (Math.random() - 0.5) * 0.6, out = 5 + Math.random() * 4, blue = k === 0 && Math.random() < 0.5;
+      const FLAME = blue ? { r: 0.7, gC: 1.3, b: 5 } : { r: 5.5, gC: 1.5 + Math.random() * 0.8, b: 0.25 };
+      firePool.emit({ x: _ex.x - fx * k * 0.1, y: _ex.y, z: _ex.z - fz * k * 0.1, vx: vb.x - fx * out + j(), vy: 0.3 + Math.random() * 0.6, vz: vb.z - fz * out + j(),
+        ...FLAME, s0: 0.38 + Math.random() * 0.2, s1: 0.08, a: 0.9, life: 0.1 + Math.random() * 0.08, drag: 2.5, wind: 0, g: 0 });
+    }
+    if (smokeT <= 0) { _wp.set(_ex.x - fx * 0.6, _ex.y + 0.1, _ex.z - fz * 0.6); puff(_wp, 'grey'); }
+  }
+  if (smokeT <= 0) smokeT = 0.12;
+}
 function cullGhost(gh, cx, cz) {
   const g = gh.built.group, dx = g.position.x - cx, dz = g.position.z - cz, vis = dx * dx + dz * dz < CULL_D2;
   g.visible = vis; if (gh.built.trailer) gh.built.trailer.group.visible = vis;
@@ -4165,6 +4229,7 @@ function tick(dtReal) {
   updateHud();
   if (!$('#debug').hidden) $('#debug').textContent = `fps ${fpsAvg.toFixed(0)} · gfx ${GFX.level}\nbodies ${world.bodies.length}\nwrecks loose ${vehicles.filter((v) => v.state === 'loose').length}\ntraffic ${vehicles.filter((v) => v.state === 'driven').length}\ntime x${timeScale.toFixed(2)}`;
   for (const v of vehicles) if (v.state !== 'gone') spinWheels(v, dtReal * timeScale, v.panic ? v.panic.steer : 0);
+  if (player.boosting && !player.crashed && player.veh && player.veh.parts.exhaust) exhaustFlames(dtReal);
   if (player.veh) spinWheels(player.veh, dtReal * timeScale, player.crashed ? 0 : (player.delta || 0));
   render();
 }

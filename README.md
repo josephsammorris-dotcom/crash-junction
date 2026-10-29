@@ -11,9 +11,10 @@ Pass-and-play for 1–4 players: three runs each, and your best run counts.
 
 | | Keyboard | Touch | Controller |
 |---|---|---|---|
-| Steer | ← → or A / D | ‹ › buttons | Left stick or d-pad |
-| Boost (hold, 10 s per run) | Space | Boost | RT or A |
-| Brake | ↓ | Brake | LT or X |
+| Steer | ← → or A / D | drag on the left of the screen | Left stick or d-pad |
+| Accelerate | ↑ or W | automatic | RT |
+| Boost (hold; 10 s, slowly refills) | Space or Shift | Boost | A or RB |
+| Brake (hold to reverse) | ↓ or S | Brake | LT or X |
 | Finish / next | Enter | Finish button | Start or A |
 | Replay the crash | Replay button | Replay button | X on the results screen |
 | Mute | M | | |
