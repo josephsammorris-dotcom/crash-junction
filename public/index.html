@@ -61,11 +61,19 @@ body { background: #1A1D25; color: var(--ink); font-family: var(--font-body); ov
 .speedo { display: flex; align-items: baseline; gap: 6px; }
 .speedo .n { font: 900 40px/1 var(--font-display); font-variant-numeric: tabular-nums; }
 .speedo .u { font: 700 12px/1 var(--font-body); letter-spacing: .12em; color: var(--ink-dim); }
-.boostbar { height: 5px; border-radius: 3px; background: var(--line); margin-top: 6px; overflow: hidden; width: 140px; }
-.boostbar i { display: block; height: 100%; width: 100%; background: var(--yellow); transform-origin: left; transition: transform .1s; }
-.boostlbl { margin-top: 5px; font: 700 10px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; color: var(--muted, #9aa0a8); }
-.boostbar.earn { box-shadow: 0 0 0 1px var(--yellow), 0 0 10px rgba(255,210,63,.6); }
-.boostbar.earn + .boostlbl { color: var(--yellow); }
+.boostmeter { margin-top: 8px; padding: 7px 10px 6px; border-radius: 10px; background: rgba(16,18,22,.72); border: 1px solid var(--line); width: 240px; }
+.boostbar { height: 9px; border-radius: 5px; background: rgba(255,255,255,.12); overflow: hidden; width: 100%; }
+.boostbar i { display: block; height: 100%; width: 100%; background: var(--yellow); transform-origin: left; transform: scaleX(0); }
+.boostlbl { margin-top: 5px; font: 700 10px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; color: #b9bec6; text-align: center; }
+.boostmeter.earn .boostbar { box-shadow: 0 0 0 1px var(--yellow), 0 0 10px rgba(255,210,63,.6); }
+.boostmeter.earn .boostlbl { color: var(--yellow); }
+.boostmeter.ready { animation: boostReady .55s ease-in-out infinite alternate; border-color: var(--yellow); }
+.boostmeter.ready .boostlbl { color: var(--yellow); }
+.boostmeter.firing .boostbar i { background: #fff3b0; }
+@keyframes boostReady { from { box-shadow: 0 0 0 0 rgba(255,210,63,0); background: rgba(16,18,22,.72); } to { box-shadow: 0 0 18px 2px rgba(255,210,63,.75); background: rgba(80,64,10,.85); } }
+.tbtn.boost.ready { animation: boostReady .55s ease-in-out infinite alternate; }
+.tbtn.boost.empty { opacity: .45; }
+@media (prefers-reduced-motion: reduce) { .boostmeter.ready, .tbtn.boost.ready { animation: none; box-shadow: 0 0 14px 2px rgba(255,210,63,.7); } }
 
 .flash { position: fixed; left: 50%; top: 34%; transform: translate(-50%, -50%); z-index: 6; pointer-events: none; font: 900 clamp(48px, 12vw, 120px)/0.9 var(--font-display); letter-spacing: 0.02em; text-transform: uppercase; color: var(--yellow); -webkit-text-stroke: 3px #1A1D25; paint-order: stroke fill; opacity: 0; }
 .flash.show { animation: flash 1.1s ease-out forwards; }
@@ -325,6 +333,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
   <div class="timer" id="timer">1:00</div>
   <div class="lights"><span id="lightEW">E–W ●</span><span id="lightNS">N–S ●</span></div>
   <div class="pchip" id="pChip"><i></i><span>Player 1 · Run 1/3</span></div>
+  <div class="boostmeter" id="boostMeter"><div class="boostbar" id="boostBar"><i id="boostI"></i></div><div class="boostlbl" id="boostLbl">Boost</div></div>
 </div>
 
 <div class="hud hud-tr">
@@ -338,8 +347,6 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
 
 <div class="hud hud-bl"><div class="plate">
   <div class="speedo"><span class="n" id="mph">0</span><span class="u">MPH</span></div>
-  <div class="boostbar" id="boostBar"><i id="boostI"></i></div>
-  <div class="boostlbl" id="boostLbl">Boost</div>
 </div></div>
 
 <div class="hint" id="hint" hidden>Earn boost with near misses and by driving on the wrong side.</div>
@@ -499,7 +506,7 @@ try {
 /* ------------------------------------------------------------------ config */
 const STEP = 1 / 60;
 const CFG = {
-  duration: 60, approachMax: 120, boostTime: 3,
+  duration: 60, approachMax: 120, boostTime: 3, light0: 16,
   cruise: 34, boost: 58, accel: 10, boostAccel: 20, brakeDecel: 24, minSpeed: 4,
   steerRate: 1.15,
   damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 0.8, blur: true, rumble: true, warm: 40,
@@ -1772,9 +1779,9 @@ function laneAt(L, s, o = _lnp) {
   return o;
 }
 function lightState(group, t) {
-  const c = ((t % 20) + 20) % 20;
-  if (group === 'EW') return c < 9 ? 'G' : c < 11 ? 'A' : 'R';
-  return c >= 12 && c < 18 ? 'G' : c >= 18 && c < 19.5 ? 'A' : 'R';
+  const c = ((t % 30) + 30) % 30;
+  if (group === 'EW') return c < 16 ? 'G' : c < 18 ? 'A' : 'R';
+  return c >= 19 && c < 28 ? 'G' : c >= 28 && c < 29.5 ? 'A' : 'R';
 }
 
 let vehicles = [];   // traffic this run: state 'driven' | 'loose' | 'gone'
@@ -2449,7 +2456,7 @@ function earnBoost(dt) {
   const p = player.body.position, fx = Math.sin(player.yaw), fz = Math.cos(player.yaw), rx = -fz, rz = fx;
   const lat = routeLat(p.x, p.z);
   player.oncoming = p.z < ZONE.minZ + 40 && lat < -0.8 && routeDist(p.x, p.z) < ROAD_HALF && player.speed > 12;
-  if (player.oncoming) { player.boost = Math.min(1, player.boost + dt * 0.035); player.stats.onc += dt; }
+  if (player.oncoming) { player.boost = Math.min(1, player.boost + dt * 0.06); player.stats.onc += dt; }
   for (const u of vehicles) {
     if (u.state !== 'driven' || u.tractor) continue;
     const dx = u.body.position.x - p.x, dz = u.body.position.z - p.z;
@@ -2459,7 +2466,7 @@ function earnBoost(dt) {
       const clear = Math.abs(l) - (u.t.W + PT.W) / 2;
       if (clear < 1.2 && clear > -0.4) {
         const oncoming = u.hd && u.hd.x * fx + u.hd.z * fz < 0; player.stats.nm++;
-        player.boost = Math.min(1, player.boost + (oncoming ? 0.2 : 0.1) * (clear < 0.6 ? 1.5 : 1));
+        player.boost = Math.min(1, player.boost + (oncoming ? 0.3 : 0.18) * (clear < 0.6 ? 1.5 : 1));
         if (!replay.on) { feed(oncoming ? 'Oncoming near miss · boost' : 'Near miss · boost', 0); sfxUi(true); }
       }
     }
@@ -2616,6 +2623,7 @@ function updateRoll(v, dt) {
 function crash(e) {
   player.crashed = true;
   player.crashTime = runTime;
+  player.boosting = false;
   for (const u of vehicles) if (u.state === 'driven') setDrivenGroup(u);
   const b = player.body;
   b.material = M_VEH;
@@ -2989,8 +2997,12 @@ function updateHud() {
   $('#sTotal').textContent = fmt(score.damage * Math.max(1, score.wrecks));
   $('#mph').textContent = player.crashed ? '—' : Math.round(Math.abs(player.speed) * 2.237);
   $('#boostI').style.transform = `scaleX(${player.boost.toFixed(3)})`;
-  $('#boostBar').classList.toggle('earn', !!player.oncoming && !player.crashed);
-  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.oncoming ? 'Oncoming · earning boost' : player.boost < 0.02 ? 'Boost · earn it' : 'Boost';
+  const bm = $('#boostMeter'), ready = !player.crashed && !player.boosting && player.boost >= 1;
+  bm.classList.toggle('earn', !!player.oncoming && !player.crashed && !ready);
+  bm.classList.toggle('ready', ready);
+  bm.classList.toggle('firing', !!player.boosting);
+  $('#tBoost').classList.toggle('ready', ready); $('#tBoost').classList.toggle('empty', !ready && !player.boosting);
+  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.boosting ? 'Boosting!' : ready ? 'Boost ready · press boost' : player.oncoming ? 'Oncoming · filling boost' : `Boost ${Math.floor(player.boost * 100)}% · near misses fill it`;
   const ew = lightState('EW', lightTime), ns = lightState('NS', lightTime);
   const col = { G: '#3DDC6A', A: '#FFB020', R: '#FF3B30' };
   $('#lightEW').innerHTML = `E–W <span style="color:${col[ew]}">●</span>`;
@@ -3765,10 +3777,10 @@ function buildRun(colour) {
   makePlayer(colour);
   // warm up the traffic so the junction is already busy, identically every run
   for (let t = 0; t < CFG.warm; t += 1 / 30) updateTraffic(1 / 30, false);
-  lightTime = 0; // E–W green at the start of every run
+  lightTime = CFG.light0; // phased so the cross traffic is already flowing when you get to the junction
   score = { damage: 0, wrecks: 0 };
   runTime = 0; lastHitTime = 0; lastFireTime = 0; acc = 0; timeScale = 1; blurState.pulse = 0; blurState.last = -9;
-  player.boost = 0; _apS = START_X + 720;
+  player.boost = 0; player.boosting = false; player.boostHeld = false; _apS = START_X + 720;
   // clear your lane where you start
   for (const v of vehicles) if (v.state === 'driven' && !v.tractor && v.lane.id === 'dn' && Math.hypot(v.body.position.x - START_X, v.body.position.z - ROUTE_Z) < 35) removeVehicle(v);
   syncMeshes();
@@ -3782,7 +3794,7 @@ function startRun() {
   setSection('drive');
   hideCards();
   setUI('running');
-  $('#hint').textContent = 'Earn boost with near misses and by driving on the wrong side. Save it to time your arrival.';
+  $('#hint').textContent = 'Fill the boost bar with near misses and wrong-side driving, then fire it when you choose.';
   $('#hint').hidden = false;
   setTimeout(() => { if (state === 'running' && !player.crashed) $('#hint').hidden = true; }, 4500);
   cam.pos.set(START_X - 12, HILL_H + 6, ROUTE_Z + LANE); cam.look.set(START_X + 20, HILL_H, ROUTE_Z + LANE);
@@ -3833,8 +3845,12 @@ function stepSim(dt) {
   if (!player.crashed && state === 'running') {
     const inp = autopilot ? autopilot(runTime, player) : input();
     if (!replay.on) rec.inputs.push([inp.steer, inp.brake ? 1 : 0, inp.boost ? 1 : 0]);
-    const boosting = !!inp.boost && player.boost > 0.02 && !inp.brake;
-    if (boosting && !player.boosting) sfxWhoosh();
+    // Boost fires only from a full bar; one press burns the lot (braking cuts it short)
+    const press = !!inp.boost && !player.boostHeld;
+    player.boostHeld = !!inp.boost;
+    let boosting = player.boosting;
+    if (!boosting && press && player.boost >= 1 && !inp.brake) { boosting = true; sfxWhoosh(); }
+    if (boosting && (inp.brake || player.boost <= 0)) boosting = false;
     player.boosting = boosting;
     let target = CFG.cruise;
     if (boosting) { target = CFG.boost; player.boost = Math.max(0, player.boost - dt / CFG.boostTime); }
