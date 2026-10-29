@@ -49,7 +49,7 @@ body { background: #1A1D25; color: var(--ink); font-family: var(--font-body); ov
 .speedo { display: flex; align-items: baseline; gap: 6px; }
 .speedo .n { font: 900 40px/1 var(--font-display); font-variant-numeric: tabular-nums; }
 .speedo .u { font: 700 12px/1 var(--font-body); letter-spacing: .12em; color: var(--ink-dim); }
-.boostmeter { margin-top: 8px; padding: 7px 10px 6px; border-radius: 10px; background: rgba(16,18,22,.72); border: 1px solid var(--line); width: 240px; }
+.boostmeter { margin-top: 8px; padding: 7px 10px 6px; border-radius: 10px; background: rgba(16,18,22,.72); border: 1px solid var(--line); width: min(240px, 36vw); min-width: 150px; box-sizing: border-box; }
 .boostbar { height: 9px; border-radius: 5px; background: rgba(255,255,255,.12); overflow: hidden; width: 100%; }
 .boostbar i { display: block; height: 100%; width: 100%; background: var(--yellow); transform-origin: left; transform: scaleX(0); }
 .boostlbl { margin-top: 5px; font: 700 10px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; color: #b9bec6; text-align: center; }
@@ -234,7 +234,6 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
   .feed div { font-size: 12px; padding: 3px 7px; }
   .feed div:nth-child(n+4) { display: none; }
   .speedo .n { font-size: 28px; }
-  .boostbar { width: 112px; }
   .hint { white-space: normal; text-align: center; width: max-content; max-width: calc(100vw - 32px); font-size: 13px; }
   .demo-badge { top: calc(104px + env(safe-area-inset-top, 0px)); }
   .flash { top: 30%; }
@@ -273,7 +272,6 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
   .feed div:nth-child(n+4) { display: none; }
   .hud-bl, body.touchmode .hud-bl { top: calc(8px + env(safe-area-inset-top, 0px)); bottom: auto; left: calc(12px + env(safe-area-inset-left, 0px)); }
   .speedo .n { font-size: 28px; }
-  .boostbar { width: 110px; }
   body.touchmode .hint, .hint { top: calc(64px + env(safe-area-inset-top, 0px)); bottom: auto; font-size: 13px; }
   .demo-badge { top: calc(64px + env(safe-area-inset-top, 0px)); }
   .flash { top: 40%; font-size: 72px; }
@@ -335,7 +333,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
   <div class="speedo"><span class="n" id="mph">0</span><span class="u">MPH</span></div>
 </div></div>
 
-<div class="hint" id="hint" hidden>Earn boost with near misses and by driving on the wrong side.</div>
+<div class="hint" id="hint" hidden>You have 10 seconds of boost. Hold boost to use it.</div>
 <div class="flash" id="flash">Crash!</div>
 <div class="debug" id="debug" hidden></div>
 <div class="demo-badge" id="demoBadge" hidden>Replay</div>
@@ -397,7 +395,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
       <section class="how">
         <div class="eyebrow">How to play</div>
         <ol class="steps">
-          <li><i>1</i><div><b>Line it up</b><span>Race across the mesa and down the ridge to a busy crossroads. Earn boost with near misses and by driving into oncoming traffic, then use it to time your arrival.</span></div></li>
+          <li><i>1</i><div><b>Line it up</b><span>Race across the mesa and down the ridge to a busy crossroads, past traffic both ways. You get 10 seconds of boost: hold it when you need it to time your arrival.</span></div></li>
           <li><i>2</i><div><b>Make one hit</b><span>Plough into the traffic. Nobody can stop in time, and the pile-up grows on its own.</span></div></li>
           <li><i>3</i><div><b>Run up the bill</b><span>Score is damage × vehicles wrecked. Fires, exploding tankers, rollovers and jackknifed semis all add to it.</span></div></li>
         </ol>
@@ -492,7 +490,7 @@ try {
 /* ------------------------------------------------------------------ config */
 const STEP = 1 / 60;
 const CFG = {
-  duration: 60, approachMax: 120, boostTime: 3, light0: 16,
+  duration: 60, approachMax: 120, boostTime: 10, light0: 16,
   cruise: 34, boost: 58, accel: 10, boostAccel: 20, brakeDecel: 24, minSpeed: 4,
   steerRate: 1.15,
   damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 0.8, blur: true, rumble: true, warm: 40,
@@ -2309,6 +2307,7 @@ function updateDrivers(dt) {
 }
 // At the front of the queue, some drivers pull out onto the sand and edge round the wreckage, then rejoin their lane
 function tryDetour(v) {
+  return; // drivers wait in the queue rather than edging round the wreckage on the sand
   if (v.detourTried) return;
   v.detourTried = true;
   if (v.trailer || v.t.L > 8 || driverRng() > 0.8) return; // buses and semis wait; some drivers just wait
@@ -2411,7 +2410,7 @@ function inZone(p) { return p.x >= ZONE.minX && p.x <= ZONE.maxX && p.z >= ZONE.
 function bump(e) {
   const v = bodyToVeh.get(e.body), u = v && (v.tractor || v);
   if (runTime - player.bumpT < (u && runTime - (u.bumpedT ?? -9) < 1.2 ? 1.2 : 0.35)) return;
-  player.bumpT = runTime; player.stats.bump++;
+  player.bumpT = runTime;
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   let along = 0, head = !v; // a rock face stops you dead
   if (u && u.hd) { const dot = u.hd.x * fx + u.hd.z * fz; along = u.v * dot; head = dot < -0.3; u.bumpedT = runTime; }
@@ -2436,28 +2435,6 @@ function routeSteer(lat = LANE, look = 14) {
   const tx = q.x - q.dz * off, tz = q.z + q.dx * off;
   let d = Math.atan2(tx - p.x, tz - p.z) - player.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
   return THREE.MathUtils.clamp(d * 3, -1, 1);
-}
-// Boost is earned on the way in: near misses (oncoming ones count for more) and time spent on the wrong side of the road
-function earnBoost(dt) {
-  const p = player.body.position, fx = Math.sin(player.yaw), fz = Math.cos(player.yaw), rx = -fz, rz = fx;
-  const lat = routeLat(p.x, p.z);
-  player.oncoming = p.z < ZONE.minZ + 40 && lat < -0.8 && routeDist(p.x, p.z) < ROAD_HALF && player.speed > 12;
-  if (player.oncoming) { player.boost = Math.min(1, player.boost + dt * 0.06); player.stats.onc += dt; }
-  for (const u of vehicles) {
-    if (u.state !== 'driven' || u.tractor) continue;
-    const dx = u.body.position.x - p.x, dz = u.body.position.z - p.z;
-    if (Math.abs(dx) > 40 || Math.abs(dz) > 40) { u.nmA = undefined; continue; }
-    const a = dx * fx + dz * fz, l = dx * rx + dz * rz;
-    if (u.nmA > 0 && a <= 0 && player.speed > 10 && runTime - (u.bumpedT ?? -9) > 1) {
-      const clear = Math.abs(l) - (u.t.W + PT.W) / 2;
-      if (clear < 1.2 && clear > -0.4) {
-        const oncoming = u.hd && u.hd.x * fx + u.hd.z * fz < 0; player.stats.nm++;
-        player.boost = Math.min(1, player.boost + 0.12 * (clear < 0.6 ? 1.5 : 1));
-        if (!replay.on) { feed(oncoming ? 'Oncoming near miss · boost' : 'Near miss · boost', 0); sfxUi(true); }
-      }
-    }
-    u.nmA = a;
-  }
 }
 
 const _inv = new THREE.Quaternion(), _loc = new THREE.Vector3(), _dl = new THREE.Vector3();
@@ -2983,12 +2960,10 @@ function updateHud() {
   $('#sTotal').textContent = fmt(score.damage * Math.max(1, score.wrecks));
   $('#mph').textContent = player.crashed ? '—' : Math.round(Math.abs(player.speed) * 2.237);
   $('#boostI').style.transform = `scaleX(${player.boost.toFixed(3)})`;
-  const bm = $('#boostMeter'), ready = !player.crashed && !player.boosting && player.boost >= 1;
-  bm.classList.toggle('earn', !!player.oncoming && !player.crashed && !ready);
-  bm.classList.toggle('ready', ready);
+  const bm = $('#boostMeter');
   bm.classList.toggle('firing', !!player.boosting);
-  $('#tBoost').classList.toggle('ready', ready); $('#tBoost').classList.toggle('empty', player.boost <= 0.005 && !player.boosting);
-  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.boosting ? 'Boosting!' : ready ? 'Boost full · hold to use' : player.oncoming ? 'Oncoming · filling boost' : player.boost > 0.005 ? `Boost ${Math.floor(player.boost * 100)}% · hold to use` : 'Boost empty · near misses fill it';
+  $('#tBoost').classList.toggle('empty', player.boost <= 0.005 && !player.boosting);
+  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.boosting ? `Boosting · ${(player.boost * CFG.boostTime).toFixed(1)} s` : player.boost > 0.005 ? `Boost · ${(player.boost * CFG.boostTime).toFixed(1)} s` : 'Boost used up';
   const ew = lightState('EW', lightTime), ns = lightState('NS', lightTime);
   const col = { G: '#3DDC6A', A: '#FFB020', R: '#FF3B30' };
   $('#lightEW').innerHTML = `E–W <span style="color:${col[ew]}">●</span>`;
@@ -3179,10 +3154,11 @@ function updateCamera(dtReal) {
     _tgtPos.set(Math.sin(cam.orbit) * 70, 34, Math.cos(cam.orbit) * 70 - 10);
     kPos = kLook = 1 - Math.pow(0.04, dtReal);
   } else if (!player.crashed) {
-    _fwd.set(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+    const dy = player.drawYaw ?? player.yaw; _fwd.set(Math.sin(dy), 0, Math.cos(dy));
     const back = 8.5 + player.speed * 0.07;
-    _tgtPos.set(pb.position.x - _fwd.x * back, pb.position.y + 3.2 + player.speed * 0.012, pb.position.z - _fwd.z * back);
-    _tgtLook.set(pb.position.x + _fwd.x * 8, pb.position.y + 0.6, pb.position.z + _fwd.z * 8);
+    const mp = player.mesh.position;
+    _tgtPos.set(mp.x - _fwd.x * back, mp.y + 3.2 + player.speed * 0.012, mp.z - _fwd.z * back);
+    _tgtLook.set(mp.x + _fwd.x * 8, mp.y + 0.6, mp.z + _fwd.z * 8);
     kPos = kLook = 1 - Math.pow(0.0005, dtReal);
   } else {
     const spread = actionFrame();
@@ -3766,7 +3742,7 @@ function buildRun(colour) {
   lightTime = CFG.light0; // phased so the cross traffic is already flowing when you get to the junction
   score = { damage: 0, wrecks: 0 };
   runTime = 0; lastHitTime = 0; lastFireTime = 0; acc = 0; timeScale = 1; blurState.pulse = 0; blurState.last = -9;
-  player.boost = 0; player.boosting = false; _apS = START_X + 720;
+  player.boost = 1; player.boosting = false; player.prev = player.prevQ = null; player.drawYaw = undefined; _apS = START_X + 720;
   // clear your lane where you start
   for (const v of vehicles) if (v.state === 'driven' && !v.tractor && v.lane.id === 'dn' && Math.hypot(v.body.position.x - START_X, v.body.position.z - ROUTE_Z) < 35) removeVehicle(v);
   syncMeshes();
@@ -3780,7 +3756,7 @@ function startRun() {
   setSection('drive');
   hideCards();
   setUI('running');
-  $('#hint').textContent = 'Fill the boost bar with near misses and wrong-side driving, then hold boost whenever you like.';
+  $('#hint').textContent = 'You have 10 seconds of boost. Hold boost to use it, and pick your moment.';
   $('#hint').hidden = false;
   setTimeout(() => { if (state === 'running' && !player.crashed) $('#hint').hidden = true; }, 4500);
   cam.pos.set(START_X - 12, HILL_H + 6, ROUTE_Z + LANE); cam.look.set(START_X + 20, HILL_H, ROUTE_Z + LANE);
@@ -3837,7 +3813,6 @@ function stepSim(dt) {
     player.boosting = boosting;
     let target = CFG.cruise;
     if (boosting) { target = CFG.boost; player.boost = Math.max(0, player.boost - dt / CFG.boostTime); }
-    earnBoost(dt);
     const sand = pb.position.z < ZONE.minZ && !onRoad(pb.position.x, pb.position.z);
     if (sand) target = Math.min(target, 15); // soft sand on the mesa top
     if (runTime - player.bumpT < 0.6) target = Math.min(target, player.speed); // shaken: no throttle for a moment
@@ -3907,25 +3882,80 @@ function stepSim(dt) {
   if (player.crashed && runTime - player.crashTime > 9 && runTime - lastHitTime > 19 && !burning.length) return endRun('Pile-up settled');
 }
 
-function syncMeshes() {
+// Physics runs at a fixed 60 Hz; the screen may not (45, 90, 120 Hz phones), so meshes are drawn part-way between
+// the last two physics states. Without this, motion judders as frames get 0, 1 or 2 physics steps.
+const _sq = new THREE.Quaternion(), _sq2 = new THREE.Quaternion();
+function snapPrev() {
   for (const v of vehicles) {
     if (v.state === 'gone') continue;
-    v.group.position.copy(v.body.position);
-    v.group.quaternion.copy(v.body.quaternion);
+    const b = v.body, P = v.prev || (v.prev = new Float64Array(7));
+    P[0] = b.position.x; P[1] = b.position.y; P[2] = b.position.z; P[3] = b.quaternion.x; P[4] = b.quaternion.y; P[5] = b.quaternion.z; P[6] = b.quaternion.w; v.prevOk = true;
   }
+  if (player.body) { const b = player.body; player.prev = [b.position.x, b.position.y, b.position.z, player.yaw]; player.prevQ = [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w]; }
+}
+const CULL_D2 = 430 * 430; // beyond this the haze has swallowed them: don't draw them
+function syncMeshes(a = 1) {
+  const cx = camera.position.x, cz = camera.position.z;
+  for (const v of vehicles) {
+    if (v.state === 'gone') continue;
+    const b = v.body, g = v.group, P = v.prevOk && a < 1 ? v.prev : null;
+    if (P) {
+      g.position.set(P[0] + (b.position.x - P[0]) * a, P[1] + (b.position.y - P[1]) * a, P[2] + (b.position.z - P[2]) * a);
+      _sq.set(P[3], P[4], P[5], P[6]); _sq2.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+      g.quaternion.slerpQuaternions(_sq, _sq2, a);
+    } else { g.position.copy(b.position); g.quaternion.copy(b.quaternion); }
+    const dx = g.position.x - cx, dz = g.position.z - cz;
+    g.visible = dx * dx + dz * dz < CULL_D2;
+  }
+  for (const gh of ghostsIn.values()) cullGhost(gh, cx, cz);
+  for (const gh of ghostsOut) cullGhost(gh, cx, cz);
   if (player.body) {
-    const pb = player.body;
-    player.mesh.position.copy(pb.position);
+    const pb = player.body, P = a < 1 && player.prev ? player.prev : null;
+    const px = P ? P[0] + (pb.position.x - P[0]) * a : pb.position.x, py = P ? P[1] + (pb.position.y - P[1]) * a : pb.position.y, pz = P ? P[2] + (pb.position.z - P[2]) * a : pb.position.z;
+    player.mesh.position.set(px, py, pz);
     if (!player.crashed) {
-      const f = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
-      const h1 = groundY(pb.position.x + f.x * 2, pb.position.z + f.z * 2), h0 = groundY(pb.position.x - f.x * 2, pb.position.z - f.z * 2);
-      _q.setFromAxisAngle(Y_AXIS, player.yaw);
+      const yaw = P ? P[3] + (player.yaw - P[3]) * a : player.yaw;
+      player.drawYaw = yaw;
+      const fx = Math.sin(yaw), fz = Math.cos(yaw);
+      const h1 = groundY(px + fx * 2, pz + fz * 2), h0 = groundY(px - fx * 2, pz - fz * 2);
+      _q.setFromAxisAngle(Y_AXIS, yaw);
       _q2.setFromAxisAngle(X_AXIS, Math.atan2(h0 - h1, 4));
       player.mesh.quaternion.copy(_q.multiply(_q2));
-      player.mesh.position.y = Math.max(pb.position.y, groundY(pb.position.x, pb.position.z) + PT.H / 2 - PT.H * COM_DROP);
+      player.mesh.position.y = Math.max(py, groundY(px, pz) + PT.H / 2 - PT.H * COM_DROP);
+    } else if (P && player.prevQ) {
+      _sq.fromArray(player.prevQ); _sq2.set(pb.quaternion.x, pb.quaternion.y, pb.quaternion.z, pb.quaternion.w);
+      player.mesh.quaternion.slerpQuaternions(_sq, _sq2, a);
     } else player.mesh.quaternion.copy(pb.quaternion);
   }
   updateShellClips();
+}
+function cullGhost(gh, cx, cz) {
+  const g = gh.built.group, dx = g.position.x - cx, dz = g.position.z - cz, vis = dx * dx + dz * dz < CULL_D2;
+  g.visible = vis; if (gh.built.trailer) gh.built.trailer.group.visible = vis;
+}
+
+/* ------------------------------------------------------------------ graphics quality: drops a step at a time if the frame rate can't keep up */
+// 0: full; 1: lighter resolution, smaller shadow map; 2: no ambient occlusion; 3: low resolution, small shadows, no bloom
+const TOUCH_DEVICE = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+const GFX = { level: -1, slowT: 0, warm: 0 };
+function setGfx(level) {
+  level = Math.max(0, Math.min(3, level));
+  if (level === GFX.level) return;
+  GFX.level = level;
+  const dpr = window.devicePixelRatio || 1;
+  renderer.setPixelRatio(Math.min(dpr, [2, 1.5, 1.25, 1][level]));
+  const sm = [4096, 2048, 2048, 1024][level];
+  if (sun.shadow.mapSize.x !== sm) { sun.shadow.mapSize.set(sm, sm); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
+  gtao.enabled = level < 2;
+  bloom.enabled = level < 3;
+  resize();
+}
+setGfx(TOUCH_DEVICE ? 2 : 0);
+function adaptQuality(dt) {
+  if (state !== 'running' || replay.on || document.hidden) { GFX.slowT = 0; GFX.warm = 0; return; }
+  GFX.warm += dt; if (GFX.warm < 2) return; // ignore the first moments of a run
+  GFX.slowT = fpsAvg < 42 ? GFX.slowT + dt : Math.max(0, GFX.slowT - dt * 2);
+  if (GFX.slowT > 2.5 && GFX.level < 3) { setGfx(GFX.level + 1); GFX.slowT = 0; GFX.warm = 0; }
 }
 
 /* ------------------------------------------------------------------ loop */
@@ -3944,17 +3974,18 @@ function tick(dtReal) {
   if (state !== 'ready') {
     acc += dtReal * timeScale;
     let n = 0;
-    while (acc >= STEP && n < 5) { stepSim(STEP); acc -= STEP; n++; }
+    while (acc >= STEP && n < 5) { snapPrev(); stepSim(STEP); acc -= STEP; n++; }
     if (n === 5) acc = 0;
   }
   updateParticles(dtReal * timeScale);
-  syncMeshes();
+  syncMeshes(state === 'running' ? Math.min(1, acc / STEP) : 1);
+  adaptQuality(dtReal);
   updateCamera(dtReal);
   updateAudio(dtReal);
   updateFireLights(dtReal);
   updateBlur(dtReal);
   updateHud();
-  if (!$('#debug').hidden) $('#debug').textContent = `fps ${fpsAvg.toFixed(0)}\nbodies ${world.bodies.length}\nwrecks loose ${vehicles.filter((v) => v.state === 'loose').length}\ntraffic ${vehicles.filter((v) => v.state === 'driven').length}\ntime x${timeScale.toFixed(2)}`;
+  if (!$('#debug').hidden) $('#debug').textContent = `fps ${fpsAvg.toFixed(0)} · gfx ${GFX.level}\nbodies ${world.bodies.length}\nwrecks loose ${vehicles.filter((v) => v.state === 'loose').length}\ntraffic ${vehicles.filter((v) => v.state === 'driven').length}\ntime x${timeScale.toFixed(2)}`;
   for (const v of vehicles) if (v.state !== 'gone') spinWheels(v, dtReal * timeScale, v.panic ? v.panic.steer : 0);
   if (player.veh) spinWheels(player.veh, dtReal * timeScale, player.crashed ? 0 : (player.steerIn || 0) * 0.35);
   render();
