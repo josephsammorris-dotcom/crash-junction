@@ -1,8 +1,8 @@
 # Crash Junction
 
 A Burnout 2-style Crash mode for the browser, built with three.js and cannon-es.
-Roll down off Mesa Ridge into a busy US desert crossroads, make one hit, and watch the pile-up grow:
-semis jackknife, buses topple, cars roll, fires spread and fuel tankers explode.
+Race across the mesa, round the butte and down Mesa Ridge into a busy US desert crossroads, make one hit, and watch the pile-up grow. Boost is earned on the way in, from near misses and driving into oncoming traffic.
+In the pile-up, semis jackknife, buses topple, cars roll, fires spread and fuel tankers explode.
 Your score is the damage multiplied by the number of vehicles wrecked.
 
 Pass-and-play for 1–4 players: three runs each, and your best run counts.
@@ -12,7 +12,7 @@ Pass-and-play for 1–4 players: three runs each, and your best run counts.
 | | Keyboard | Touch | Controller |
 |---|---|---|---|
 | Steer | ← → or A / D | ‹ › buttons | Left stick or d-pad |
-| Boost (refills) | Space | Boost | RT or A |
+| Boost (earned) | Space | Boost | RT or A |
 | Brake | ↓ | Brake | LT or X |
 | Finish / next | Enter | Finish button | Start or A |
 | Replay the crash | Replay button | Replay button | X on the results screen |

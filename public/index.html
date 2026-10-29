@@ -63,6 +63,9 @@ body { background: #1A1D25; color: var(--ink); font-family: var(--font-body); ov
 .speedo .u { font: 700 12px/1 var(--font-body); letter-spacing: .12em; color: var(--ink-dim); }
 .boostbar { height: 5px; border-radius: 3px; background: var(--line); margin-top: 6px; overflow: hidden; width: 140px; }
 .boostbar i { display: block; height: 100%; width: 100%; background: var(--yellow); transform-origin: left; transition: transform .1s; }
+.boostlbl { margin-top: 5px; font: 700 10px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; color: var(--muted, #9aa0a8); }
+.boostbar.earn { box-shadow: 0 0 0 1px var(--yellow), 0 0 10px rgba(255,210,63,.6); }
+.boostbar.earn + .boostlbl { color: var(--yellow); }
 
 .flash { position: fixed; left: 50%; top: 34%; transform: translate(-50%, -50%); z-index: 6; pointer-events: none; font: 900 clamp(48px, 12vw, 120px)/0.9 var(--font-display); letter-spacing: 0.02em; text-transform: uppercase; color: var(--yellow); -webkit-text-stroke: 3px #1A1D25; paint-order: stroke fill; opacity: 0; }
 .flash.show { animation: flash 1.1s ease-out forwards; }
@@ -335,10 +338,11 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
 
 <div class="hud hud-bl"><div class="plate">
   <div class="speedo"><span class="n" id="mph">0</span><span class="u">MPH</span></div>
-  <div class="boostbar"><i id="boostI"></i></div>
+  <div class="boostbar" id="boostBar"><i id="boostI"></i></div>
+  <div class="boostlbl" id="boostLbl">Boost</div>
 </div></div>
 
-<div class="hint" id="hint" hidden>Pick your moment. One hit, then the traffic does the rest.</div>
+<div class="hint" id="hint" hidden>Earn boost with near misses and by driving on the wrong side.</div>
 <div class="flash" id="flash">Crash!</div>
 <div class="debug" id="debug" hidden></div>
 <div class="demo-badge" id="demoBadge" hidden>Replay</div>
@@ -400,7 +404,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
       <section class="how">
         <div class="eyebrow">How to play</div>
         <ol class="steps">
-          <li><i>1</i><div><b>Line it up</b><span>Roll down off the ridge towards a busy desert crossroads. Steer, boost and brake to time your arrival.</span></div></li>
+          <li><i>1</i><div><b>Line it up</b><span>Race across the mesa and down the ridge to a busy crossroads. Earn boost with near misses and by driving into oncoming traffic, then use it to time your arrival.</span></div></li>
           <li><i>2</i><div><b>Make one hit</b><span>Plough into the traffic. Nobody can stop in time, and the pile-up grows on its own.</span></div></li>
           <li><i>3</i><div><b>Run up the bill</b><span>Score is damage × vehicles wrecked. Fires, exploding tankers, rollovers and jackknifed semis all add to it.</span></div></li>
         </ol>
@@ -495,7 +499,7 @@ try {
 /* ------------------------------------------------------------------ config */
 const STEP = 1 / 60;
 const CFG = {
-  duration: 60,
+  duration: 60, approachMax: 120, boostTime: 3,
   cruise: 34, boost: 58, accel: 10, boostAccel: 20, brakeDecel: 24, minSpeed: 4,
   steerRate: 1.15,
   damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 0.8, blur: true, rumble: true, warm: 40,
@@ -537,7 +541,23 @@ function groundY(x, z) {
   return 0;
 }
 const RIG_GAP = 0.4; // between tractor and trailer bodies
-function onRoad(x, z) { return Math.abs(z) < ROAD_HALF + 0.4 || (Math.abs(x) < ROAD_HALF + 0.4 && z > -1200); }
+// The approach: you start out west on the mesa top, run east, take a right-hander round a butte, then head south
+// over the crest and down the ridge to the junction. Centreline: z = ROUTE_Z (west of the bend), a quarter circle
+// of radius ROUTE_R about (-ROUTE_R, ROUTE_Z + ROUTE_R), then x = 0 south from z = ROUTE_Z + ROUTE_R.
+const ROUTE_Z = -360, ROUTE_R = 70, ROUTE_S2Z = ROUTE_Z + ROUTE_R, START_X = -438;
+function routeDist(x, z) {
+  const d1 = x <= -ROUTE_R ? Math.abs(z - ROUTE_Z) : Math.hypot(x + ROUTE_R, z - ROUTE_Z);
+  const d3 = z >= ROUTE_S2Z ? Math.abs(x) : Math.hypot(x, z - ROUTE_S2Z);
+  const dA = x >= -ROUTE_R && z <= ROUTE_S2Z ? Math.abs(Math.hypot(x + ROUTE_R, z - ROUTE_S2Z) - ROUTE_R) : Infinity;
+  return Math.min(d1, d3, dA);
+}
+// signed offset from the centreline, + = the southbound (your) side
+function routeLat(x, z) {
+  if (z >= ROUTE_S2Z) return -x;
+  if (x <= -ROUTE_R) return z - ROUTE_Z;
+  return ROUTE_R - Math.hypot(x + ROUTE_R, z - ROUTE_S2Z);
+}
+function onRoad(x, z) { return Math.abs(z) < ROAD_HALF + 0.4 || routeDist(x, z) < ROAD_HALF + 0.4; }
 const ZONE = { minX: -75, maxX: 75, minZ: -206, maxZ: 125 };
 
 /* ------------------------------------------------------------------ renderer, sky, light, post-processing */
@@ -817,7 +837,7 @@ sandMat.onBeforeCompile = (sh) => {
 
 // Terrain height: flat where the roads are, rolling sand further out, big dunes on the horizon, and the ridge you start on
 function duneH(x, z) {
-  const near = Math.min(Math.abs(z), z > -215 ? Math.abs(x) : 999);
+  const near = Math.min(Math.abs(z), routeDist(x, z));
   const r = Math.hypot(x, z);
   const a1 = THREE.MathUtils.smoothstep(near, 16, 80) * 1.4;
   const a2 = THREE.MathUtils.smoothstep(r, 220, 900) * 22 * THREE.MathUtils.smoothstep(near, 30, 220);
@@ -854,6 +874,9 @@ function terrainH(x, z) { return groundY(x, z) + duneH(x, z); }
   const nrm = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
   addStatic(new CANNON.Box(new CANNON.Vec3(200, 1, rampLen / 2 + 0.3)), new THREE.Vector3(0, HILL_H / 2, (HILL_TOP_Z + HILL_BOT_Z) / 2).addScaledVector(nrm, -1), q);
   addStatic(new CANNON.Box(new CANNON.Vec3(200, 1, 30)), new THREE.Vector3(0, HILL_H - 1, HILL_TOP_Z - 30));
+  addStatic(new CANNON.Box(new CANNON.Vec3(420, 1, 130)), new THREE.Vector3(-300, HILL_H - 1, HILL_TOP_Z - 130)); // the mesa top the approach runs across
+  // the butte inside the bend is solid
+  addStatic(new CANNON.Cylinder(22, 26, 40, 16), new THREE.Vector3(-ROUTE_R, HILL_H + 18, ROUTE_S2Z), null, M_GROUND, false);
 }
 
 // Asphalt: sun-bleached aggregate, cracks, tar-sealed seams, darker tyre tracks
@@ -890,7 +913,7 @@ function roadMat(lenAxis) {
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vWp;').replace('#include <uv_vertex>', '#include <uv_vertex>\n vec4 wpA = modelMatrix * vec4(position, 1.0); vWp = wpA.xyz;\n #if defined( USE_MAP )\n vMapUv = wpA.xz / 11.0;\n #endif\n #if defined( USE_ROUGHNESSMAP )\n vRoughnessMapUv = wpA.xz / 4.0;\n #endif\n #if defined( USE_NORMALMAP )\n vNormalMapUv = wpA.xz / 3.0;\n #endif');
     // polished, darker tyre tracks in each lane
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n varying vec3 vWp;').replace('#include <map_fragment>', `#include <map_fragment>
-      float acr = ${lenAxis === 'x' ? 'vWp.z' : 'vWp.x'};
+      float acr = ${lenAxis === 'x' ? 'vWp.z' : lenAxis === 'arc' ? `(${ROUTE_R.toFixed(1)} - length(vWp.xz - vec2(${(-ROUTE_R).toFixed(1)}, ${ROUTE_S2Z.toFixed(1)})))` : 'vWp.x'};
       float track = 0.0;
       for (int i = 0; i < 4; i++) { float c = (i < 2 ? 1.0 : -1.0) * (${LANE.toFixed(2)} + (mod(float(i), 2.0) < 0.5 ? -0.75 : 0.75)); track += exp(-pow((acr - c) / 0.32, 2.0)); }
       diffuseColor.rgb *= 1.0 - 0.18 * track;`);
@@ -933,10 +956,27 @@ for (const m of [paintWhite, paintYellow]) m.onBeforeCompile = (sh) => { sh.vert
   grp.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), HILL_ANGLE); scene.add(grp);
   strip(rampLen + 0.4, ROAD_HALF * 2, roadMat('z'), 0, Y, 0, false, grp);
   strip(rampLen + 0.4, ROAD_HALF * 2 + 3, new THREE.MeshStandardMaterial({ map: gravelMap, roughness: 1 }), 0, 0.006, 0, false, grp);
-  // across the top of the ridge and away to the north
-  const topLen = 1200 + HILL_TOP_Z;
-  strip(topLen, ROAD_HALF * 2, roadMat('z'), 0, HILL_H + Y, HILL_TOP_Z - topLen / 2, false);
-  strip(topLen, ROAD_HALF * 2 + 3, new THREE.MeshStandardMaterial({ map: gravelMap, roughness: 1 }), 0, HILL_H + 0.006, HILL_TOP_Z - topLen / 2, false);
+  // across the mesa top: north to the bend, round the butte, and away west to the horizon
+  const topLen = HILL_TOP_Z - ROUTE_S2Z, HY = HILL_H + Y;
+  strip(topLen + 0.3, ROAD_HALF * 2, roadMat('z'), 0, HY, (HILL_TOP_Z + ROUTE_S2Z) / 2, false);
+  strip(topLen + 0.3, ROAD_HALF * 2 + 3, new THREE.MeshStandardMaterial({ map: gravelMap, roughness: 1 }), 0, HILL_H + 0.006, (HILL_TOP_Z + ROUTE_S2Z) / 2, false);
+  const westLen = 1200 - ROUTE_R;
+  strip(westLen + 0.3, ROAD_HALF * 2, roadMat('x'), -ROUTE_R - westLen / 2, HY, ROUTE_Z, true);
+  strip(westLen + 0.3, ROAD_HALF * 2 + 3, new THREE.MeshStandardMaterial({ map: gravelMap, roughness: 1 }), -ROUTE_R - westLen / 2, HILL_H + 0.006, ROUTE_Z, true);
+  // the bend: a ribbon following the arc (offset measured towards the butte)
+  const arc = (off, w, mat, y) => {
+    const n = 48, pos = [], idx = [];
+    for (let i = 0; i <= n; i++) {
+      const th = (i / n) * Math.PI / 2, sx = Math.sin(th), sz = -Math.cos(th);
+      for (const e of [-1, 1]) { const r = ROUTE_R - off + e * w / 2; pos.push(-ROUTE_R + r * sx, y, ROUTE_S2Z + r * sz); }
+      if (i < n) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+    if (g.attributes.normal.getY(0) < 0) { g.setIndex(idx.map((v, k) => idx[k - (k % 3) + [0, 2, 1][k % 3]])); g.computeVertexNormals(); }
+    const m = new THREE.Mesh(g, mat); m.receiveShadow = true; scene.add(m); return m;
+  };
+  arc(0, ROAD_HALF * 2 + 3, new THREE.MeshStandardMaterial({ map: gravelMap, roughness: 1 }), HILL_H + 0.006);
+  arc(0, ROAD_HALF * 2, roadMat('arc'), HY);
   // Markings: double yellow centre lines, white edge lines, stop bars
   const lineAlongX = (x0, x1, z, mat, w = 0.12) => strip(x1 - x0, w, mat, (x0 + x1) / 2, Y + 0.012, z, true);
   const lineAlongZ = (z0, z1, x, mat, w = 0.12, parent = scene, y = Y + 0.012) => strip(z1 - z0, w, mat, x, y, (z0 + z1) / 2, false, parent);
@@ -946,8 +986,12 @@ for (const m of [paintWhite, paintYellow]) m.onBeforeCompile = (sh) => { sh.vert
     lineAlongX(J, 1200, s * EDGE, paintWhite, 0.15); lineAlongX(-1200, -J, s * EDGE, paintWhite, 0.15);
     lineAlongZ(J, 1200, s * 0.13, paintYellow); lineAlongZ(HILL_BOT_Z, -J, s * 0.13, paintYellow);
     lineAlongZ(J, 1200, s * EDGE, paintWhite, 0.15); lineAlongZ(HILL_BOT_Z, -J, s * EDGE, paintWhite, 0.15);
-    lineAlongZ(-1200, HILL_TOP_Z, s * 0.13, paintYellow, 0.12, scene, HILL_H + Y + 0.012);
-    lineAlongZ(-1200, HILL_TOP_Z, s * EDGE, paintWhite, 0.15, scene, HILL_H + Y + 0.012);
+    lineAlongZ(ROUTE_S2Z, HILL_TOP_Z, s * 0.13, paintYellow, 0.12, scene, HILL_H + Y + 0.012);
+    lineAlongZ(ROUTE_S2Z, HILL_TOP_Z, s * EDGE, paintWhite, 0.15, scene, HILL_H + Y + 0.012);
+    strip(westLen, 0.12, paintYellow, -ROUTE_R - westLen / 2, HILL_H + Y + 0.012, ROUTE_Z + s * 0.13, true);
+    strip(westLen, 0.15, paintWhite, -ROUTE_R - westLen / 2, HILL_H + Y + 0.012, ROUTE_Z + s * EDGE, true);
+    arc(s * 0.13, 0.12, paintYellow, HILL_H + Y + 0.012);
+    arc(s * EDGE, 0.15, paintWhite, HILL_H + Y + 0.012);
     lineAlongZ(-rampLen / 2, rampLen / 2, s * 0.13, paintYellow, 0.12, grp, Y + 0.012);
     lineAlongZ(-rampLen / 2, rampLen / 2, s * EDGE, paintWhite, 0.15, grp, Y + 0.012);
   }
@@ -1063,7 +1107,7 @@ sign(-ROAD_HALF - 2, -95, 0, speed55, 0.95, 1.2, 1.9);
 sign(-ROAD_HALF - 3, -195, 0, guide, 3.2, 2.2, 2.4);
 
 /* ------------------------------------------------------------------ rocks, scrub, saguaros and mesas */
-const avoidRoad = (x, z, m) => Math.abs(z) > m && (z < -215 || Math.abs(x) > m);
+const avoidRoad = (x, z, m) => Math.abs(z) > m && routeDist(x, z) > m && Math.hypot(x + ROUTE_R, z - ROUTE_S2Z) > 40;
 {
   // Rocks: displaced icosahedra in iron-red sandstone
   const rockMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, flatShading: true, envMapIntensity: 0.4 });
@@ -1162,6 +1206,7 @@ const avoidRoad = (x, z, m) => Math.abs(z) > m && (z < -215 || Math.abs(x) > m);
   };
   [[-900, 700, 260, 120], [600, 1100, 180, 150], [1300, 200, 300, 110], [-1300, -300, 220, 140], [200, -1500, 340, 160], [-650, -1150, 90, 170],
    [1050, -900, 120, 190], [-200, 1550, 400, 120], [1600, 1300, 260, 140], [-1700, 900, 160, 180]].forEach(([x, z, r, h], i) => mesa(x, z, r, h, i * 1.7));
+  mesa(-ROUTE_R, ROUTE_S2Z, 17, 30, 4.2); // the butte you go round on the approach: it hides what's coming the other way
 }
 
 /* ------------------------------------------------------------------ vehicle meshes: sculpted, deformable bodies */
@@ -1671,14 +1716,61 @@ function clearParticles() { for (const s of shards) dropShard(s); shards.length 
 
 /* ------------------------------------------------------------------ traffic */
 // Right-hand traffic. Each lane is a path with a stop line and a signal group.
+const GHOST_FAR = 470; // metres from the junction: how far out scenery traffic is drawn
 const LANES = [
   { id: 'eb', start: new THREE.Vector3(-185, 0, LANE), dir: new THREE.Vector3(1, 0, 0), len: 370, stopS: 185 - ROAD_HALF - 2.1, group: 'EW', v0: 18, headway: 2.1,
     pattern: ['car', 'pickup', 'car', 'van', 'car', 'bus', 'car', 'pickup', 'lorry', 'car', 'car', 'tanker', 'pickup', 'car'] },
   { id: 'wb', start: new THREE.Vector3(185, 0, -LANE), dir: new THREE.Vector3(-1, 0, 0), len: 370, stopS: 185 - ROAD_HALF - 2.1, group: 'EW', v0: 17, headway: 2.3,
     pattern: ['pickup', 'car', 'van', 'car', 'tanker', 'car', 'car', 'lorry', 'pickup', 'bus', 'car', 'van'] },
-  { id: 'sb', start: new THREE.Vector3(LANE, 0, 165), dir: new THREE.Vector3(0, 0, -1), len: 368, stopS: 165 - ROAD_HALF - 2.1, group: 'NS', v0: 15, headway: 2.6,
+  // up from the south, through the junction, up the ridge and round the bend: the oncoming traffic on your approach
+  { id: 'sb', start: new THREE.Vector3(LANE, 0, 165), dir: new THREE.Vector3(0, 0, -1), len: 0, stopS: 165 - ROAD_HALF - 2.1, group: 'NS', v0: 15, headway: 2.6,
+    path: [['line', LANE, 165, 0, -1, 165 - ROUTE_S2Z], ['arc', -1], ['line', -ROUTE_R, ROUTE_Z - LANE, -1, 0, 720 - ROUTE_R]],
     pattern: ['car', 'pickup', 'bus', 'car', 'van', 'car', 'lorry', 'car', 'pickup', 'van'] },
+  // heading your way, from far out west: it rolls on down the ridge and through the junction
+  { id: 'dn', start: new THREE.Vector3(-720, 0, ROUTE_Z + LANE), dir: new THREE.Vector3(1, 0, 0), len: 0, stopS: 0, group: 'NS', v0: 16, headway: 6.5,
+    path: [['line', -720, ROUTE_Z + LANE, 1, 0, 720 - ROUTE_R], ['arc', 1], ['line', -LANE, ROUTE_S2Z, 0, 1, 185 - ROUTE_S2Z]],
+    pattern: ['car', 'pickup', 'car', 'lorry', 'car', 'van', 'car', 'pickup', 'bus', 'car', 'car', 'van'] },
 ];
+// Lanes that bend are sampled every PATH_DS metres along their length
+const PATH_DS = 0.25;
+for (const L of LANES) {
+  if (!L.path) { L.ghostBack = GHOST_FAR - L.start.length(); L.ghostEnd = L.start.length() + GHOST_FAR; continue; }
+  const P = []; let x = 0, z = 0;
+  const push = (px, pz, dx, dz) => P.push(px, pz, dx, dz);
+  for (const seg of L.path) {
+    if (seg[0] === 'line') {
+      const [, x0, z0, dx, dz, len] = seg, n = Math.round(len / PATH_DS);
+      for (let i = P.length ? 1 : 0; i <= n; i++) push(x0 + dx * i * PATH_DS, z0 + dz * i * PATH_DS, dx, dz);
+      x = x0 + dx * n * PATH_DS; z = z0 + dz * n * PATH_DS;
+    } else { // quarter circle about the bend centre; turn +1 = clockwise (east to south), -1 = the reverse
+      const t = seg[1], r = ROUTE_R - t * LANE, n = Math.round((Math.PI / 2 * r) / PATH_DS);
+      for (let i = 1; i <= n; i++) {
+        const th = t > 0 ? (i / n) * Math.PI / 2 : (1 - i / n) * Math.PI / 2;
+        push(-ROUTE_R + r * Math.sin(th), ROUTE_S2Z - r * Math.cos(th), t * Math.cos(th), t * Math.sin(th));
+      }
+    }
+  }
+  L.pts = new Float32Array(P); L.len = (P.length / 4 - 1) * PATH_DS;
+  if (L.id === 'dn') { // stop line at the foot of the ridge, the junction centre ROAD_HALF + 2.1 beyond it
+    const sJ = L.len - 185; L.stopS = sJ - ROAD_HALF - 2.1;
+  }
+  L.ghostBack = L.id === 'dn' ? 480 : GHOST_FAR - 165; L.ghostEnd = L.len + (L.id === 'dn' ? 470 - 185 : 480);
+}
+// Where a lane is at distance s along it: position and heading (straight lanes extend past either end)
+const _lnp = { x: 0, z: 0, dx: 0, dz: 0 };
+function laneAt(L, s, o = _lnp) {
+  if (!L.pts) { o.x = L.start.x + L.dir.x * s; o.z = L.start.z + L.dir.z * s; o.dx = L.dir.x; o.dz = L.dir.z; return o; }
+  const P = L.pts, n = P.length / 4 - 1;
+  let i, f;
+  if (s <= 0) { i = 0; f = s / PATH_DS; } else if (s >= L.len) { i = n; f = (s - L.len) / PATH_DS; } else { const u = s / PATH_DS; i = Math.floor(u); f = u - i; }
+  if (s > 0 && s < L.len) {
+    const a = i * 4, b = a + 4;
+    o.x = P[a] + (P[b] - P[a]) * f; o.z = P[a + 1] + (P[b + 1] - P[a + 1]) * f;
+    const dx = P[a + 2] + (P[b + 2] - P[a + 2]) * f, dz = P[a + 3] + (P[b + 3] - P[a + 3]) * f, m = Math.hypot(dx, dz);
+    o.dx = dx / m; o.dz = dz / m;
+  } else { const a = i * 4; o.dx = P[a + 2]; o.dz = P[a + 3]; o.x = P[a] + o.dx * f * PATH_DS; o.z = P[a + 1] + o.dz * f * PATH_DS; }
+  return o;
+}
 function lightState(group, t) {
   const c = ((t % 20) + 20) % 20;
   if (group === 'EW') return c < 9 ? 'G' : c < 11 ? 'A' : 'R';
@@ -1745,17 +1837,18 @@ function rearS(u) { return u.s - u.t.L / 2 - (u.trailer ? RIG_GAP + u.trailer.t.
 function followTrailer(v) {
   const tr = v.trailer, L = v.lane, b = tr.body;
   tr.s = v.s - (v.t.L / 2 + RIG_GAP + tr.t.L / 2); tr.v = v.v;
-  _p.copy(L.start).addScaledVector(L.dir, tr.s);
-  const slope = laneSlope(L, _p.x, _p.z);
-  b.position.set(_p.x, groundY(_p.x, _p.z) + restHeight(tr.t), _p.z);
-  b.velocity.set(L.dir.x * v.v, 0, L.dir.z * v.v); b.angularVelocity.set(0, 0, 0);
-  setLaneOrientation(tr, slope);
+  const q = laneAt(L, tr.s);
+  const slope = laneSlope(L, q.x, q.z, q);
+  b.position.set(q.x, groundY(q.x, q.z) + restHeight(tr.t), q.z);
+  b.velocity.set(q.dx * v.v, 0, q.dz * v.v); b.angularVelocity.set(0, 0, 0);
+  (tr.hd ||= { x: 0, z: 0 }).x = q.dx; tr.hd.z = q.dz;
+  setLaneOrientation(tr, slope, 0, q);
 }
 
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _p = new THREE.Vector3(), X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0);
-function laneSlope(L, x, z) { return groundY(x + L.dir.x, z + L.dir.z) - groundY(x, z); }
-function setLaneOrientation(v, slope, yawAdj = 0) {
-  _q.setFromAxisAngle(Y_AXIS, Math.atan2(v.lane.dir.x, v.lane.dir.z) + yawAdj);
+function laneSlope(L, x, z, q) { const dx = q ? q.dx : L.dir.x, dz = q ? q.dz : L.dir.z; return groundY(x + dx, z + dz) - groundY(x, z); }
+function setLaneOrientation(v, slope, yawAdj = 0, q) {
+  _q.setFromAxisAngle(Y_AXIS, Math.atan2(q ? q.dx : v.lane.dir.x, q ? q.dz : v.lane.dir.z) + yawAdj);
   _q2.setFromAxisAngle(X_AXIS, -Math.atan(slope));
   _q.multiply(_q2);
   v.body.quaternion.set(_q.x, _q.y, _q.z, _q.w);
@@ -1763,29 +1856,40 @@ function setLaneOrientation(v, slope, yawAdj = 0) {
 // Off-camera warm-up and idle: place traffic exactly on its path
 function placeOnPath(v) {
   if (v.tractor) return;
-  const L = v.lane;
-  _p.copy(L.start).addScaledVector(L.dir, v.s);
-  const slope = laneSlope(L, _p.x, _p.z);
-  v.body.position.set(_p.x, groundY(_p.x, _p.z) + v.t.H / 2 - v.t.H * COM_DROP + 0.03, _p.z);
-  v.body.velocity.set(L.dir.x * v.v, slope * v.v, L.dir.z * v.v);
+  const L = v.lane, q = laneAt(L, v.s);
+  const slope = laneSlope(L, q.x, q.z, q);
+  v.body.position.set(q.x, groundY(q.x, q.z) + v.t.H / 2 - v.t.H * COM_DROP + 0.03, q.z);
+  v.body.velocity.set(q.dx * v.v, slope * v.v, q.dz * v.v);
   v.body.angularVelocity.set(0, 0, 0);
-  setLaneOrientation(v, slope);
+  (v.hd ||= { x: 0, z: 0 }).x = q.dx; v.hd.z = q.dz;
+  setLaneOrientation(v, slope, 0, q);
   if (v.trailer && v.trailer.state === 'driven') followTrailer(v);
 }
 // Live: drive the body with velocity so it has real momentum in a collision
 function drive(v) {
   if (v.tractor) return;
   const L = v.lane, b = v.body;
-  const rx = b.position.x - L.start.x, rz = b.position.z - L.start.z;
-  v.s = rx * L.dir.x + rz * L.dir.z;
-  // lateral position, measured to the right of the lane line; a driver going round wreckage holds an offset
-  const rX = -L.dir.z, rZ = L.dir.x, off = v.off || 0, offRate = v.offRate || 0;
-  const err = rx * rX + rz * rZ - off;
-  const slope = laneSlope(L, b.position.x, b.position.z);
+  let q, err;
+  const off = v.off || 0, offRate = v.offRate || 0;
+  if (!L.pts) {
+    const rx = b.position.x - L.start.x, rz = b.position.z - L.start.z;
+    v.s = rx * L.dir.x + rz * L.dir.z;
+    // lateral position, measured to the right of the lane line; a driver going round wreckage holds an offset
+    err = rx * -L.dir.z + rz * L.dir.x - off;
+    q = laneAt(L, v.s);
+  } else { // along a bend: slide s to the nearest point on the path, then measure the offset there
+    q = laneAt(L, v.s);
+    v.s += (b.position.x - q.x) * q.dx + (b.position.z - q.z) * q.dz;
+    q = laneAt(L, v.s);
+    err = (b.position.x - q.x) * -q.dz + (b.position.z - q.z) * q.dx - off;
+  }
+  const rX = -q.dz, rZ = q.dx;
+  const slope = laneSlope(L, b.position.x, b.position.z, q);
   b.position.y = groundY(b.position.x, b.position.z) + v.t.H / 2 - v.t.H * COM_DROP + 0.03;
-  b.velocity.set(L.dir.x * v.v + rX * (offRate - err * 2), 0, L.dir.z * v.v + rZ * (offRate - err * 2));
+  b.velocity.set(q.dx * v.v + rX * (offRate - err * 2), 0, q.dz * v.v + rZ * (offRate - err * 2));
   b.angularVelocity.set(0, 0, 0);
-  setLaneOrientation(v, slope, offRate ? THREE.MathUtils.clamp(-Math.atan2(offRate, Math.max(v.v, 0.6)), -0.6, 0.6) : 0);
+  (v.hd ||= { x: 0, z: 0 }).x = q.dx; v.hd.z = q.dz;
+  setLaneOrientation(v, slope, offRate ? THREE.MathUtils.clamp(-Math.atan2(offRate, Math.max(v.v, 0.6)), -0.6, 0.6) : 0, q);
   if (v.trailer && v.trailer.state === 'driven') followTrailer(v);
 }
 
@@ -1813,6 +1917,16 @@ function updateTraffic(dt, live) {
       if (i > 0) { const lead = list[i - 1]; gap = rearS(lead) - (v.s + v.t.L / 2); }
       const front = v.s + v.t.L / 2;
       if (v.hazGap < Infinity) gap = Math.min(gap, v.hazGap - 1.5); // wreckage ahead, seen in time
+      // on the approach you're just another car: traffic behind you doesn't drive into your back, and oncoming
+      // traffic brakes (and leans on the horn) if you're coming at it on its side of the road
+      if (live && !player.crashed && v.hd && (L.id === 'dn' || (L.pts && !inZone(player.body.position)))) {
+        const px = player.body.position.x - v.body.position.x, pz = player.body.position.z - v.body.position.z;
+        const a = px * v.hd.x + pz * v.hd.z, l = px * -v.hd.z + pz * v.hd.x;
+        if (a > 0 && a < 80 && Math.abs(l) < 2.6) {
+          gap = Math.min(gap, a - v.t.L / 2 - PT.L / 2 - 1);
+          if (L.id !== 'dn' && a < 45 && runTime - (v.honkT ?? -9) > 2.5) { v.honkT = runTime; sfxHorn(v.body.position, v.type, 0.8 + Math.random() * 0.8); }
+        }
+      }
       if (front < L.stopS + 0.5 && !v.detour) {
         const toLine = L.stopS - front;
         const canStop = toLine > (v.v * v.v) / (2 * 6) + 0.5;
@@ -1863,12 +1977,11 @@ function removeVehicle(v) {
 // drawn but never touch the physics. Inbound ones are the cars the simulation is about to spawn (its schedule is
 // known from each lane's timer), so each one rolls up and becomes the real car at the spawn point; outbound ones
 // are cars that left the simulated stretch, carrying on to the horizon. None of this changes the simulation.
-const GHOST_FAR = 470; // metres from the junction
 let ghostsIn = new Map(), ghostsOut = [];
 const rigHalfBack = (t) => t.L / 2 + (t.trailer ? RIG_GAP + t.trailer.L : 0);
 function placeGhost(built, type, L, s) {
-  const t = TYPES[type], yaw = Math.atan2(L.dir.x, L.dir.z);
-  const put = (sv, tt, grp) => { _p.copy(L.start).addScaledVector(L.dir, sv); grp.position.set(_p.x, groundY(_p.x, _p.z) + restHeight(tt), _p.z); grp.quaternion.setFromAxisAngle(Y_AXIS, yaw); };
+  const t = TYPES[type];
+  const put = (sv, tt, grp) => { const q = laneAt(L, sv); grp.position.set(q.x, groundY(q.x, q.z) + restHeight(tt), q.z); grp.quaternion.setFromAxisAngle(Y_AXIS, Math.atan2(q.dx, q.dz)); };
   put(s, t, built.group);
   if (t.trailer && built.trailer) put(s - (t.L / 2 + RIG_GAP + t.trailer.L / 2), t.trailer, built.trailer.group);
 }
@@ -1876,7 +1989,7 @@ function dropGhost(g) { for (const grp of [g.built.group, g.built.trailer && g.b
 function takeGhost(L, idx) { const k = L.id + ':' + idx, g = ghostsIn.get(k); if (!g) return null; ghostsIn.delete(k); return g.built; }
 function retireVehicle(v) {
   const L = v.lane;
-  if (L.group !== 'EW' || v.state !== 'driven') { removeVehicle(v); return; }
+  if (v.state !== 'driven') { removeVehicle(v); return; }
   const g = { L, s: v.s, v: v.v, type: v.type, built: { group: v.group, trailer: v.trailer ? { group: v.trailer.group } : null } };
   v.group = new THREE.Group(); if (v.trailer) v.trailer.group = new THREE.Group(); // keep the meshes; the bodies go
   removeVehicle(v); ghostsOut.push(g);
@@ -1884,7 +1997,7 @@ function retireVehicle(v) {
 function updateGhosts(dt) {
   const seen = new Set();
   for (const ls of lanes) {
-    const L = ls.L, v0 = L.v0 * CFG.trafficScale, maxD = GHOST_FAR - L.start.length();
+    const L = ls.L, v0 = L.v0 * CFG.trafficScale, maxD = L.ghostBack;
     let T = ls.next, idx = ls.idx, prev = -Infinity, prevT = null;
     for (let k = 0; k < 20; k++) {
       const type = L.pattern[idx % L.pattern.length], t = TYPES[type];
@@ -1902,7 +2015,7 @@ function updateGhosts(dt) {
   for (const [k, g] of ghostsIn) if (!seen.has(k)) { dropGhost(g); ghostsIn.delete(k); }
   ghostsOut = ghostsOut.filter((g) => {
     g.s += g.v * dt;
-    if (g.s - g.L.start.length() > GHOST_FAR) { dropGhost(g); return false; }
+    if (g.s > g.L.ghostEnd) { dropGhost(g); return false; }
     placeGhost(g.built, g.type, g.L, g.s); return true;
   });
 }
@@ -2139,7 +2252,7 @@ let driverRng = rng(2002);
 // along its whole length) is tested against a corridor ahead of the driver, as wide as the vehicle plus a margin.
 const _hx = new CANNON.Vec3(), _hz = new CANNON.Vec3();
 function hazardAhead(v, obstacles) {
-  const b = v.body, dir = v.lane.dir, halfW = v.t.W / 2 + 0.6;
+  const b = v.body, dir = v.hd || v.lane.dir, halfW = v.t.W / 2 + 0.6;
   let best = null, bd = Infinity;
   for (const o of obstacles) {
     if (o === v || o === v.trailer || o.tractor === v) continue;
@@ -2213,12 +2326,12 @@ function tryDetour(v) {
 }
 // How far right of the lane line this driver must be to clear the wreckage alongside and just ahead
 function detourNeed(v) {
-  const L = v.lane, dir = L.dir, rX = -dir.z, rZ = dir.x;
+  const L = v.lane, q = laneAt(L, v.s), dir = { x: q.dx, z: q.dz }, rX = -dir.z, rZ = dir.x, qx = q.x - dir.x * v.s, qz = q.z - dir.z * v.s;
   let need = 0;
   for (const o of allUnits()) {
     if (o === v || o === v.trailer) continue;
     if (o.lane === L && o.state === 'driven' && !o.detour && (o.tractor ? o.tractor.s : o.s) < v.s) continue; // queued behind: they follow us
-    const ox = o.body.position.x - L.start.x, oz = o.body.position.z - L.start.z;
+    const ox = o.body.position.x - qx, oz = o.body.position.z - qz;
     const ext = Math.max(o.t.W, o.t.L) * 0.5, os = ox * dir.x + oz * dir.z;
     if (os + ext < v.s - v.t.L - 1 || os - ext > v.s + 22) continue;
     const ol = ox * rX + oz * rZ;
@@ -2253,15 +2366,16 @@ function panic(v) {
 
 /* ------------------------------------------------------------------ player */
 const PT = { L: 4.6, W: 1.9, H: 1.42, mass: 1900, label: 'Your car' };
-const player = { body: null, mesh: null, veh: null, yaw: 0, speed: 0, crashed: false, crashTime: 0, boost: 1 };
+const player = { body: null, mesh: null, veh: null, yaw: 0, speed: 0, crashed: false, crashTime: 0, boost: 0, bumpT: -9, enteredZone: false, oncoming: false };
 function makePlayer(colour = '#F2B705') {
   const body = makeBody(PT, true);
-  body.position.set(-LANE, HILL_H + PT.H / 2 - PT.H * COM_DROP + 0.05, -192);
+  body.position.set(START_X, HILL_H + PT.H / 2 - PT.H * COM_DROP + 0.05, ROUTE_Z + LANE);
   const built = buildVehicle('car', colour, true);
   const veh = newVehState(PT, body, built, { isPlayer: true, state: 'player', label: PT.label });
   body.addEventListener('collide', (e) => { onPlayerCollide(e); onCollide(veh, e); });
   world.addBody(body);
-  Object.assign(player, { body, mesh: built.group, veh, yaw: 0, speed: 0, crashed: false, crashTime: 0 });
+  Object.assign(player, { body, mesh: built.group, veh, yaw: Math.PI / 2, speed: 0, crashed: false, crashTime: 0, bumpT: -9, enteredZone: false, oncoming: false, stats: { nm: 0, bump: 0, onc: 0 } });
+  _q.setFromAxisAngle(Y_AXIS, Math.PI / 2); body.quaternion.set(_q.x, _q.y, _q.z, _q.w);
 }
 
 /* ------------------------------------------------------------------ damage + scoring */
@@ -2275,6 +2389,7 @@ function massOf(body) {
 function onCollide(v, e) {
   if (state !== 'running') return;
   const other = e.body;
+  if (!player.crashed && (v.isPlayer || other === player.body) && !inZone(player.body.position)) return; // a bump on the approach
   const isGround = groundBodies.has(other);
   const vel = Math.abs(e.contact.getImpactVelocityAlongNormal());
   if (isGround && vel < 4) return;
@@ -2295,7 +2410,61 @@ function onCollide(v, e) {
 function onPlayerCollide(e) {
   if (state !== 'running' || player.crashed) return;
   if (groundBodies.has(e.body)) return;
+  if (!inZone(player.body.position)) { bump(e); return; }
   crash(e);
+}
+function inZone(p) { return p.x >= ZONE.minX && p.x <= ZONE.maxX && p.z >= ZONE.minZ && p.z <= ZONE.maxZ; }
+// Out on the approach, traffic is solid but it isn't your crash: clip something and you lose speed and get knocked off line
+function bump(e) {
+  const v = bodyToVeh.get(e.body), u = v && (v.tractor || v);
+  if (runTime - player.bumpT < (u && runTime - (u.bumpedT ?? -9) < 1.2 ? 1.2 : 0.35)) return;
+  player.bumpT = runTime; player.stats.bump++;
+  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  let along = 0, head = !v; // a rock face stops you dead
+  if (u && u.hd) { const dot = u.hd.x * fx + u.hd.z * fz; along = u.v * dot; head = dot < -0.3; u.bumpedT = runTime; }
+  const before = player.speed;
+  player.speed = head ? CFG.minSpeed : Math.max(CFG.minSpeed, Math.min(player.speed * 0.55, along - 1.5));
+  const c = e.contact, isBi = c.bi === player.body;
+  const nx = isBi ? -c.ni.x : c.ni.x, nz = isBi ? -c.ni.z : c.ni.z; // away from what you hit
+  player.yaw += THREE.MathUtils.clamp(nx * -fz + nz * fx, -1, 1) * 0.16;
+  const pos = new THREE.Vector3(player.body.position.x, player.body.position.y, player.body.position.z);
+  sfxImpact(Math.min(14, Math.abs(before - along) * 0.6 + 4), pos, false);
+  rumble(0.6, 0.4, 220); cam.shake = 0.35;
+  if (!replay.on) feed(head ? 'Smash! Speed lost' : 'Bump! Speed lost', 0);
+}
+// Test helper: steer along the approach, `lat` metres right of the centreline (your lane is +LANE)
+let _apS = 0;
+function routeSteer(lat = LANE, look = 14) {
+  const L = LANES.find((l) => l.id === 'dn'), p = player.body.position;
+  let best = _apS, bd = Infinity;
+  for (let s = _apS - 20; s < _apS + 60; s += 1) { const q = laneAt(L, s); const d = (q.x - p.x) ** 2 + (q.z - p.z) ** 2; if (d < bd) { bd = d; best = s; } }
+  _apS = best;
+  const q = laneAt(L, best + look), off = lat - LANE;
+  const tx = q.x - q.dz * off, tz = q.z + q.dx * off;
+  let d = Math.atan2(tx - p.x, tz - p.z) - player.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+  return THREE.MathUtils.clamp(d * 3, -1, 1);
+}
+// Boost is earned on the way in: near misses (oncoming ones count for more) and time spent on the wrong side of the road
+function earnBoost(dt) {
+  const p = player.body.position, fx = Math.sin(player.yaw), fz = Math.cos(player.yaw), rx = -fz, rz = fx;
+  const lat = routeLat(p.x, p.z);
+  player.oncoming = p.z < ZONE.minZ + 40 && lat < -0.8 && routeDist(p.x, p.z) < ROAD_HALF && player.speed > 12;
+  if (player.oncoming) { player.boost = Math.min(1, player.boost + dt * 0.035); player.stats.onc += dt; }
+  for (const u of vehicles) {
+    if (u.state !== 'driven' || u.tractor) continue;
+    const dx = u.body.position.x - p.x, dz = u.body.position.z - p.z;
+    if (Math.abs(dx) > 40 || Math.abs(dz) > 40) { u.nmA = undefined; continue; }
+    const a = dx * fx + dz * fz, l = dx * rx + dz * rz;
+    if (u.nmA > 0 && a <= 0 && player.speed > 10 && runTime - (u.bumpedT ?? -9) > 1) {
+      const clear = Math.abs(l) - (u.t.W + PT.W) / 2;
+      if (clear < 1.2 && clear > -0.4) {
+        const oncoming = u.hd && u.hd.x * fx + u.hd.z * fz < 0; player.stats.nm++;
+        player.boost = Math.min(1, player.boost + (oncoming ? 0.2 : 0.1) * (clear < 0.6 ? 1.5 : 1));
+        if (!replay.on) { feed(oncoming ? 'Oncoming near miss · boost' : 'Near miss · boost', 0); sfxUi(true); }
+      }
+    }
+    u.nmA = a;
+  }
 }
 
 const _inv = new THREE.Quaternion(), _loc = new THREE.Vector3(), _dl = new THREE.Vector3();
@@ -2460,7 +2629,7 @@ function crash(e) {
     const n = new THREE.Vector3(c.ni.x, 0, c.ni.z); if (!isBi) n.negate();
     const pt = isBi ? new THREE.Vector3(c.bj.position.x + c.rj.x, c.bj.position.y + c.rj.y, c.bj.position.z + c.rj.z)
                     : new THREE.Vector3(c.bi.position.x + c.ri.x, c.bi.position.y + c.ri.y, c.bi.position.z + c.ri.z);
-    const vt0 = v.state === 'driven' ? v.lane.dir.clone().multiplyScalar(v.v) : new THREE.Vector3(v.body.velocity.x, 0, v.body.velocity.z);
+    const vt0 = v.state === 'driven' ? new THREE.Vector3(v.hd ? v.hd.x : v.lane.dir.x, 0, v.hd ? v.hd.z : v.lane.dir.z).multiplyScalar(v.v) : new THREE.Vector3(v.body.velocity.x, 0, v.body.velocity.z);
     const vp0 = new THREE.Vector3(Math.sin(player.yaw) * player.speed, 0, Math.cos(player.yaw) * player.speed);
     player.punch = { v, n, pt, vt0, vp0 };
   }
@@ -2810,7 +2979,7 @@ function flash(text) {
   flashEl.classList.remove('show'); void flashEl.offsetWidth; flashEl.classList.add('show');
 }
 function updateHud() {
-  const left = Math.max(0, CFG.duration - runTime);
+  const left = Math.max(0, CFG.duration - (player.crashed ? runTime - player.crashTime : 0)); // the clock starts at the impact
   const tEl = $('#timer');
   const secs = Math.ceil(left);
   tEl.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
@@ -2820,6 +2989,8 @@ function updateHud() {
   $('#sTotal').textContent = fmt(score.damage * Math.max(1, score.wrecks));
   $('#mph').textContent = player.crashed ? '—' : Math.round(Math.abs(player.speed) * 2.237);
   $('#boostI').style.transform = `scaleX(${player.boost.toFixed(3)})`;
+  $('#boostBar').classList.toggle('earn', !!player.oncoming && !player.crashed);
+  $('#boostLbl').textContent = player.crashed ? 'Boost' : player.oncoming ? 'Oncoming · earning boost' : player.boost < 0.02 ? 'Boost · earn it' : 'Boost';
   const ew = lightState('EW', lightTime), ns = lightState('NS', lightTime);
   const col = { G: '#3DDC6A', A: '#FFB020', R: '#FF3B30' };
   $('#lightEW').innerHTML = `E–W <span style="color:${col[ew]}">●</span>`;
@@ -3597,7 +3768,9 @@ function buildRun(colour) {
   lightTime = 0; // E–W green at the start of every run
   score = { damage: 0, wrecks: 0 };
   runTime = 0; lastHitTime = 0; lastFireTime = 0; acc = 0; timeScale = 1; blurState.pulse = 0; blurState.last = -9;
-  player.boost = 1;
+  player.boost = 0; _apS = START_X + 720;
+  // clear your lane where you start
+  for (const v of vehicles) if (v.state === 'driven' && !v.tractor && v.lane.id === 'dn' && Math.hypot(v.body.position.x - START_X, v.body.position.z - ROUTE_Z) < 35) removeVehicle(v);
   syncMeshes();
 }
 function startRun() {
@@ -3609,10 +3782,10 @@ function startRun() {
   setSection('drive');
   hideCards();
   setUI('running');
-  $('#hint').textContent = 'Pick your moment. One hit, then the traffic does the rest.';
+  $('#hint').textContent = 'Earn boost with near misses and by driving on the wrong side. Save it to time your arrival.';
   $('#hint').hidden = false;
   setTimeout(() => { if (state === 'running' && !player.crashed) $('#hint').hidden = true; }, 4500);
-  cam.pos.set(-LANE, HILL_H + 6, -205); cam.look.set(-LANE, HILL_H, -180);
+  cam.pos.set(START_X - 12, HILL_H + 6, ROUTE_Z + LANE); cam.look.set(START_X + 20, HILL_H, ROUTE_Z + LANE);
 }
 function endRun(reason) {
   if (state !== 'running') return;
@@ -3664,10 +3837,13 @@ function stepSim(dt) {
     if (boosting && !player.boosting) sfxWhoosh();
     player.boosting = boosting;
     let target = CFG.cruise;
-    if (inp.boost && player.boost > 0.02) { target = CFG.boost; player.boost = Math.max(0, player.boost - dt / 2.6); }
-    else player.boost = Math.min(1, player.boost + dt / 1.6);
+    if (boosting) { target = CFG.boost; player.boost = Math.max(0, player.boost - dt / CFG.boostTime); }
+    earnBoost(dt);
+    const sand = pb.position.z < ZONE.minZ && !onRoad(pb.position.x, pb.position.z);
+    if (sand) target = Math.min(target, 15); // soft sand on the mesa top
+    if (runTime - player.bumpT < 0.6) target = Math.min(target, player.speed); // shaken: no throttle for a moment
     if (inp.brake) target = CFG.minSpeed;
-    const rate = inp.brake ? CFG.brakeDecel : target > player.speed ? (target === CFG.boost ? CFG.boostAccel : CFG.accel) : 6;
+    const rate = inp.brake ? CFG.brakeDecel : target > player.speed ? (target === CFG.boost ? CFG.boostAccel : CFG.accel) : sand ? 14 : 6;
     player.speed += THREE.MathUtils.clamp(target - player.speed, -rate * dt, rate * dt);
     player.steerIn = inp.steer;
     player.yaw += inp.steer * CFG.steerRate * dt * Math.min(1, player.speed / 12);
@@ -3720,8 +3896,11 @@ function stepSim(dt) {
   // End conditions
   const p = pb.position;
   const out = p.x < ZONE.minX || p.x > ZONE.maxX || p.z < ZONE.minZ || p.z > ZONE.maxZ || p.y < -4;
-  if (!player.crashed && out) return endRun('Left the crash zone');
-  if (runTime >= CFG.duration) return endRun(player.crashed ? 'Time up' : 'No crash before time ran out');
+  if (!player.crashed && !out) player.enteredZone = true;
+  if (!player.crashed && out && player.enteredZone) return endRun('Left the crash zone');
+  if (!player.crashed && (p.y < -4 || routeDist(p.x, p.z) > 90)) return endRun('Left the road');
+  if (player.crashed && runTime - player.crashTime >= CFG.duration) return endRun('Time up');
+  if (!player.crashed && runTime >= CFG.approachMax) return endRun('No crash before time ran out');
   // The aftermath plays out: about 15 s after the last impact, and never while anything is still burning (Finish skips it)
   if (replay.on && runTime >= rec.endT) return endRun('Replay');
   const canFinish = player.crashed && runTime - player.crashTime > 1.5 && !replay.on;
@@ -3931,7 +4110,7 @@ audioInit(); // starts suspended until the player's first touch or key (browser 
 requestAnimationFrame(frame);
 
 // Hook for automated testing
-window.__hsxTest = { get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
+window.__hsxTest = { routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
 </script>
 
 </body>
