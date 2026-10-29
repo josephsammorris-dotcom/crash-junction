@@ -148,7 +148,7 @@ body.touchmode .tune, body[data-ui="ready"] .tune, body[data-ui="results"] .tune
 .err { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; font-size: 16px; background: #1A1D25; color: var(--ink); z-index: 20; }
 
 /* Title screen: big condensed logo over the orbiting junction, guide and player setup in one card */
-.splash { z-index: 15; cursor: pointer; background: radial-gradient(120% 90% at 50% 45%, rgba(26,29,37,.2), rgba(12,13,18,.88)); }
+.splash { z-index: 15; cursor: pointer; background: radial-gradient(110% 90% at 50% 45%, #171a22, #0a0b0f); }
 .splash-inner { margin: auto; display: grid; gap: 16px; justify-items: center; text-align: center; }
 .splash .logo-type em { display: inline; }
 .splash .logo-type { font-size: clamp(64px, 12vw, 170px); }
@@ -2452,7 +2452,7 @@ function earnBoost(dt) {
       const clear = Math.abs(l) - (u.t.W + PT.W) / 2;
       if (clear < 1.2 && clear > -0.4) {
         const oncoming = u.hd && u.hd.x * fx + u.hd.z * fz < 0; player.stats.nm++;
-        player.boost = Math.min(1, player.boost + (oncoming ? 0.3 : 0.18) * (clear < 0.6 ? 1.5 : 1));
+        player.boost = Math.min(1, player.boost + 0.12 * (clear < 0.6 ? 1.5 : 1));
         if (!replay.on) { feed(oncoming ? 'Oncoming near miss · boost' : 'Near miss · boost', 0); sfxUi(true); }
       }
     }
