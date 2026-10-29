@@ -923,9 +923,11 @@ const SAND_GLSL = `
   float sandCover(vec2 wp, float ae, float edge0, float edge1){
     float ragged = (fbz(wp * 0.45) - 0.5) * 2.2 + (vnz(wp * 2.1) - 0.5) * 0.6;
     float edge = smoothstep(edge0, edge1, ae + ragged);
-    float drift = smoothstep(0.56, 0.76, fbz(wp * vec2(0.05, 0.05) + vec2(3.0, 9.0))) * (0.35 + 0.65 * smoothstep(1.5, ${ROAD_HALF.toFixed(1)}, ae));
-    float speck = smoothstep(0.8, 0.95, vnz(wp * 1.6)) * 0.35;
-    return clamp(edge + drift * (0.55 + 0.45 * vnz(wp * 0.9)) + speck * smoothstep(3.0, ${ROAD_HALF.toFixed(1)}, ae), 0.0, 1.0);
+    // drifts and specks only near the edges, and none in the junction itself (traffic keeps it swept)
+    float clearJ = smoothstep(14.0, 30.0, length(wp));
+    float drift = smoothstep(0.56, 0.76, fbz(wp * vec2(0.05, 0.05) + vec2(3.0, 9.0))) * smoothstep(2.6, ${ROAD_HALF.toFixed(1)}, ae) * clearJ;
+    float speck = smoothstep(0.8, 0.95, vnz(wp * 1.6)) * 0.35 * smoothstep(3.5, ${ROAD_HALF.toFixed(1)}, ae) * clearJ;
+    return clamp(edge + drift * (0.55 + 0.45 * vnz(wp * 0.9)) + speck, 0.0, 1.0);
   }`;
 const SAND_RGB = `vec3(${SAND_COL.r.toFixed(4)}, ${SAND_COL.g.toFixed(4)}, ${SAND_COL.b.toFixed(4)})`;
 const acrExpr = (lenAxis) => lenAxis === 'x' ? 'vWp.z' : lenAxis === 'arc' ? `(${ROUTE_R.toFixed(1)} - length(vWp.xz - vec2(${(-ROUTE_R).toFixed(1)}, ${ROUTE_S2Z.toFixed(1)})))` : 'vWp.x';
@@ -946,7 +948,7 @@ function roadMat(lenAxis) {
       diffuseColor.a *= 1.0 - smoothstep(0.1, 0.7, sandAmt);
       diffuseColor.rgb = mix(diffuseColor.rgb, ${SAND_RGB} * 0.9, smoothstep(0.0, 0.45, sandAmt) * 0.7);`).replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 1.0, sandAmt);').replace('void main() {', SAND_GLSL + '\nvoid main() {');
   };
-  m.transparent = true; m.depthWrite = true; m.userData.road = true; // drawn after the opaque desert; fades into it at the edges and under drifts
+  m.transparent = true; m.depthWrite = false; m.userData.road = true; // drawn after the opaque desert; fades into it at the edges and under drifts
   m.customProgramCacheKey = () => 'road-' + lenAxis; // each road direction compiles its own shader
   return m;
 }
@@ -989,7 +991,7 @@ const paintWhite = new THREE.MeshStandardMaterial({ color: '#e9e6dc', roughness:
 const paintYellow = new THREE.MeshStandardMaterial({ color: '#e0a92a', roughness: 0.55, alphaMap: wearTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
 for (const m of [paintWhite, paintYellow]) m.onBeforeCompile = (sh) => {
   sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vWpP;').replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n vWpP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n varying vec3 vWpP;').replace('void main() {', SAND_GLSL + '\nvoid main() {').replace('#include <alphamap_fragment>', '#include <alphamap_fragment>\n diffuseColor.a *= 1.0 - 0.9 * smoothstep(0.56, 0.76, fbz(vWpP.xz * 0.05 + vec2(3.0, 9.0)));'); sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n #if defined( USE_ALPHAMAP )\n vAlphaMapUv = (modelMatrix * vec4(position, 1.0)).xz / 5.0;\n #endif'); };
+  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n varying vec3 vWpP;').replace('void main() {', SAND_GLSL + '\nvoid main() {').replace('#include <alphamap_fragment>', '#include <alphamap_fragment>\n diffuseColor.a *= 1.0 - 0.9 * smoothstep(0.56, 0.76, fbz(vWpP.xz * 0.05 + vec2(3.0, 9.0))) * smoothstep(14.0, 30.0, length(vWpP.xz));'); sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n #if defined( USE_ALPHAMAP )\n vAlphaMapUv = (modelMatrix * vec4(position, 1.0)).xz / 5.0;\n #endif'); };
 {
   const Y = 0.02;
   // East–west highway
@@ -1149,6 +1151,7 @@ sign(-ROAD_HALF - 2, -95, 0, speed55, 0.95, 1.2, 1.9);
 sign(-ROAD_HALF - 3, -195, 0, guide, 3.2, 2.2, 2.4);
 
 /* ------------------------------------------------------------------ rocks, scrub, saguaros and mesas */
+const CACTI = []; // every saguaro, so cars can hit them (see cactusHits)
 const avoidRoad = (x, z, m) => Math.abs(z) > m && routeDist(x, z) > m && Math.hypot(x + ROUTE_R, z - ROUTE_S2Z) > 40;
 {
   // Rocks: displaced icosahedra in iron-red sandstone
@@ -1212,13 +1215,14 @@ const avoidRoad = (x, z, m) => Math.abs(z) > m && routeDist(x, z) > m && Math.hy
     if (k > 2) { const a3 = arm(1, h * 0.62, 0.7, 1.4, 0.2); a3.forEach((g) => g.rotateY(1.9)); parts.push(...a3); }
     return BGU.mergeGeometries(parts.map((g) => g.toNonIndexed ? (g.index ? g.toNonIndexed() : g) : g));
   });
-  for (const g of sagGeos) {
+  for (const [k, g] of sagGeos.entries()) {
     const N = 26, im = new THREE.InstancedMesh(g, sagMat, N);
     for (let i = 0; i < N; i++) {
       let x, z; do { const r = 26 + Math.pow(wRng(), 1.3) * 420, a = wRng() * Math.PI * 2; x = Math.cos(a) * r; z = Math.sin(a) * r; } while (!avoidRoad(x, z, 16));
       const s = 0.8 + wRng() * 0.45;
       dummy.position.set(x, terrainH(x, z) - 0.1, z); dummy.rotation.set((wRng() - 0.5) * 0.06, wRng() * 6.3, (wRng() - 0.5) * 0.06); dummy.scale.setScalar(s); dummy.updateMatrix();
       im.setMatrixAt(i, dummy.matrix);
+      CACTI.push({ im, i, x, z, s, r: 0.4 * s, h: (6 + k * 1.6) * s, geo: g, mat: sagMat, m0: dummy.matrix.clone(), down: false });
     }
     im.castShadow = true; im.receiveShadow = true; scene.add(im);
   }
@@ -2534,6 +2538,84 @@ function driveCar(dt, inp, boosting) {
   // tyre marks, screech and dust come from the same code as the traffic
   P.veh.skid = slip; P.veh.onSand = sand;
 }
+// Saguaros are solid. Barely moving: you stop against it. A knock: you bounce off. Hit it hard: it snaps at the
+// base and topples, and you plough on, a little slower.
+const CGRID = new Map(), CCELL = 20;
+function cactusGrid() {
+  if (CGRID.size) return;
+  for (const c of CACTI) { const k = Math.floor(c.x / CCELL) + ',' + Math.floor(c.z / CCELL); (CGRID.get(k) || CGRID.set(k, []).get(k)).push(c); }
+}
+const fallen = [];
+const _cq = new THREE.Quaternion();
+function cactusHits() {
+  cactusGrid();
+  const units = vehicles.filter((v) => v.state === 'loose');
+  if (player.body) units.push(player.veh);
+  for (const u of units) {
+    const b = u.body, gx = Math.floor(b.position.x / CCELL), gz = Math.floor(b.position.z / CCELL);
+    const hw = u.t.W / 2, hl = u.t.L / 2;
+    for (let ix = gx - 1; ix <= gx + 1; ix++) for (let iz = gz - 1; iz <= gz + 1; iz++) {
+      const list = CGRID.get(ix + ',' + iz); if (!list) continue;
+      for (const c of list) {
+        if (c.down) continue;
+        const dx = c.x - b.position.x, dz = c.z - b.position.z;
+        if (dx * dx + dz * dz > (hl + c.r + 1) ** 2) continue;
+        // closest point of the vehicle's footprint to the trunk
+        _cq.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+        const fx = 2 * (_cq.x * _cq.z + _cq.w * _cq.y), fz = 1 - 2 * (_cq.x * _cq.x + _cq.y * _cq.y), fl = Math.hypot(fx, fz) || 1;
+        const ax = fx / fl, az = fz / fl, sx = az, sz = -ax;
+        const la = THREE.MathUtils.clamp(dx * ax + dz * az, -hl, hl), ls = THREE.MathUtils.clamp(dx * sx + dz * sz, -hw, hw);
+        const px = b.position.x + ax * la + sx * ls, pz = b.position.z + az * la + sz * ls;
+        let nx = px - c.x, nz = pz - c.z; const dist = Math.hypot(nx, nz);
+        if (dist > c.r) continue;
+        if (dist < 1e-4) { nx = -dx; nz = -dz; } const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl; // out of the trunk, towards the vehicle
+        const vx = b.velocity.x, vz = b.velocity.z, vn = vx * nx + vz * nz;
+        if (vn >= 0) continue; // already moving away
+        const sp = -vn, pos = new THREE.Vector3(c.x, terrainH(c.x, c.z) + 1.2, c.z);
+        let ox = vx, oz = vz;
+        if (sp > 11 && u.t.mass > 900) { // snap it
+          topple(c, vx, vz, sp);
+          ox = vx - nx * vn * 0.35; oz = vz - nz * vn * 0.35;
+          sfxImpact(9, pos, false); dustCloud(pos, 6, 1.5);
+          if (!replay.on && u.isPlayer) feed('Saguaro down', 0);
+        } else if (sp > 2.5) { // bounce off
+          ox = vx - nx * vn * 1.35; oz = vz - nz * vn * 1.35;
+          sfxImpact(Math.min(8, sp), pos, false); puff(pos, 'dust');
+        } else { ox = vx - nx * vn; oz = vz - nz * vn; ox *= 0.4; oz *= 0.4; } // just leans on it
+        const push = c.r - dist + 0.02;
+        b.position.x += nx * push; b.position.z += nz * push;
+        b.velocity.x = ox; b.velocity.z = oz;
+        if (u.isPlayer && !player.crashed) { // your car's own model: back into forward and sideways speed
+          const yf = Math.sin(player.yaw), yz = Math.cos(player.yaw);
+          player.u = ox * yf + oz * yz; player.vl = ox * yz - oz * yf;
+          player.speed = player.u; player.r += (nx * yz - nz * yf) * Math.min(1.5, sp * 0.08);
+          if (sp > 2.5 && sp <= 11) { rumble(0.5, 0.3, 160); cam.shake = 0.25; }
+        } else if (sp > 2.5) b.angularVelocity.y += (nx * az - nz * ax) * Math.min(1.2, sp * 0.06);
+      }
+    }
+  }
+}
+function topple(c, vx, vz, sp) {
+  c.down = true;
+  _wm.makeScale(0, 0, 0); c.im.setMatrixAt(c.i, _wm); c.im.instanceMatrix.needsUpdate = true;
+  const body = new CANNON.Body({ mass: 350, shape: new CANNON.Cylinder(c.r, c.r, c.h, 8), material: M_VEH, linearDamping: 0.1, angularDamping: 0.4 });
+  body.collisionFilterGroup = G_LOOSE; body.collisionFilterMask = G_STATIC; // falls on the ground, doesn't snag the wrecks
+  const y0 = terrainH(c.x, c.z);
+  body.position.set(c.x, y0 + c.h / 2 + 0.05, c.z);
+  const l = Math.hypot(vx, vz) || 1;
+  body.velocity.set(vx / l * sp * 0.25, 0.5, vz / l * sp * 0.25);
+  body.angularVelocity.set(vz / l * Math.min(3, sp * 0.12), 0, -vx / l * Math.min(3, sp * 0.12)); // tip over in the direction it was hit
+  world.addBody(body);
+  const mesh = new THREE.Mesh(c.geo, c.mat); mesh.castShadow = true; mesh.receiveShadow = true;
+  const grp = new THREE.Group(); mesh.scale.setScalar(c.s); mesh.position.y = -c.h / 2; grp.add(mesh); scene.add(grp);
+  fallen.push({ c, body, grp });
+}
+const _wm = new THREE.Matrix4();
+function clearCacti() {
+  for (const f of fallen) { world.removeBody(f.body); scene.remove(f.grp); }
+  fallen.length = 0;
+  for (const c of CACTI) if (c.down) { c.down = false; c.im.setMatrixAt(c.i, c.m0); c.im.instanceMatrix.needsUpdate = true; }
+}
 // Test helper: steer along the approach, `lat` metres right of the centreline (your lane is +LANE)
 let _apS = 0;
 function routeSteer(lat = LANE, look = 14) {
@@ -3827,7 +3909,7 @@ try { best = Number(localStorage.getItem('hsx-best')) || 0; } catch (_) { best =
 
 function clearRun() {
   for (const v of vehicles) if (v.state !== 'gone') removeVehicle(v);
-  vehicles = []; bodyToVeh = new Map(); clearGhosts();
+  vehicles = []; bodyToVeh = new Map(); clearGhosts(); clearCacti();
   if (player.body) { world.removeBody(player.body); scene.remove(player.mesh); disposeTree(player.mesh); }
   clearParticles();
   pendingLoose = []; hitQueue = new Map(); clearSkids(); player.punch = null; clearFires();
@@ -3944,6 +4026,7 @@ function stepSim(dt) {
   pendingLoose = [];
   for (const v of vehicles) if (v.hinge) limitArticulation(v);
   if (player.punch) applyPunch();
+  cactusHits();
   for (const v of vehicles) if (v.state === 'loose') tyreEffects(v, dt);
   if (player.veh && state === 'running') tyreEffects(player.veh, dt);
   for (const v of vehicles) if (v.state === 'loose') {
@@ -4033,6 +4116,7 @@ function syncMeshes(a = 1) {
       player.mesh.quaternion.slerpQuaternions(_sq, _sq2, a);
     } else player.mesh.quaternion.copy(pb.quaternion);
   }
+  for (const f of fallen) { f.grp.position.copy(f.body.position); f.grp.quaternion.copy(f.body.quaternion); }
   updateShellClips();
 }
 function cullGhost(gh, cx, cz) {
@@ -4246,7 +4330,7 @@ audioInit(); // starts suspended until the player's first touch or key (browser 
 requestAnimationFrame(frame);
 
 // Hook for automated testing
-window.__hsxTest = { routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
+window.__hsxTest = { CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
 </script>
 
 </body>
