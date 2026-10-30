@@ -522,9 +522,12 @@ const CAR_COLOURS = ['#B9BDC2', '#16181C', '#ECEEEF', '#6E1018', '#1E3760', '#55
 
 /* ------------------------------------------------------------------ geometry of the junction */
 // A desert highway crossroads at the foot of a ridge. Americans drive on the right.
-const ROAD_HALF = 6.5;   // edge of the paved shoulder
-const LANE = 1.9;        // lane centre offset from the yellow line
-const EDGE = 3.75;       // white edge line
+const ROAD_HALF = 9.75;  // TEST: roads 50% wider (was 6.5)
+//   // edge of the paved shoulder
+const LANE = 2.85;       // TEST: was 1.9
+//        // lane centre offset from the yellow line
+const EDGE = 5.6;        // TEST: was 3.75
+//       // white edge line
 const HILL_TOP_Z = -170, HILL_BOT_Z = -50, HILL_H = 12;
 const HILL_SLOPE = HILL_H / (HILL_BOT_Z - HILL_TOP_Z); // drop per metre of +z
 const HILL_ANGLE = Math.atan(HILL_SLOPE);
@@ -1074,7 +1077,7 @@ function setSignals(t) {
 function mastArm(px, pz, armDir, yaw, group) {
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 7.2, 14), metalGrey); pole.position.set(px, 3.6, pz); pole.castShadow = true; scene.add(pole);
   const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.5, 0.4, 12), new THREE.MeshStandardMaterial({ color: '#a8a296', roughness: 0.9 })); base.position.set(px, 0.2, pz); scene.add(base);
-  const armLen = 9.5;
+  const armLen = ROAD_HALF + 4.5;
   const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, armLen, 10), metalGrey);
   arm.rotation.z = Math.PI / 2; if (armDir.z) arm.rotation.set(Math.PI / 2, 0, 0);
   arm.position.set(px + armDir.x * armLen / 2, 6.9, pz + armDir.z * armLen / 2); arm.castShadow = true; scene.add(arm);
@@ -3380,10 +3383,10 @@ function updateCamera(dtReal) {
     kPos = kLook = 1 - Math.pow(0.04, dtReal);
   } else if (!player.crashed) {
     const dy = player.drawYaw ?? player.yaw; _fwd.set(Math.sin(dy), 0, Math.cos(dy));
-    const back = 8.5 + player.speed * 0.07;
+    const back = 5.4 + player.speed * 0.035; // TEST: closer chase camera (was 8.5 + speed * 0.07, 3.2 m up)
     const mp = player.mesh.position;
-    _tgtPos.set(mp.x - _fwd.x * back, mp.y + 3.2 + player.speed * 0.012, mp.z - _fwd.z * back);
-    _tgtLook.set(mp.x + _fwd.x * 8, mp.y + 0.6, mp.z + _fwd.z * 8);
+    _tgtPos.set(mp.x - _fwd.x * back, mp.y + 1.9 + player.speed * 0.008, mp.z - _fwd.z * back);
+    _tgtLook.set(mp.x + _fwd.x * 10, mp.y + 0.9, mp.z + _fwd.z * 10);
     kPos = kLook = 1 - Math.pow(0.0005, dtReal);
   } else {
     const spread = actionFrame();
