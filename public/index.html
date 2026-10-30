@@ -133,19 +133,18 @@ body[data-ui="ready"] .tune-toggle, body[data-ui="results"] .tune-toggle, body[d
 
 /* Touch controls */
 .touch { position: fixed; z-index: 7; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 12px; align-items: flex-end; }
-.steerpad { left: 0; bottom: 0; top: 30vh; width: 62vw; display: block; touch-action: none; -webkit-tap-highlight-color: transparent; }
-.steer-ring { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(244,241,232,.28); background: rgba(22,25,33,.22); opacity: 0; transition: opacity .15s; pointer-events: none; }
-.steer-ring i { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; background: rgba(244,241,232,.55); }
-.steerpad.active .steer-ring { opacity: 1; }
-.steer-tip { position: absolute; left: calc(22px + env(safe-area-inset-left, 0px)); bottom: calc(26px + env(safe-area-inset-bottom, 0px)); font: 700 11px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; color: rgba(244,241,232,.6); pointer-events: none; }
-.steerpad.used .steer-tip { display: none; }
+.steerbtns { left: calc(10px + env(safe-area-inset-left, 0px)); gap: 8px; touch-action: none; }
+.sbtn { width: clamp(90px, 28vw, 150px); height: clamp(96px, 15vh, 150px); border-radius: 22px; border: 2px solid rgba(244,241,232,.35); background: rgba(22,25,33,.5); color: var(--ink); display: grid; place-items: center; touch-action: none; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+.sbtn svg { width: 40px; height: 40px; fill: currentColor; pointer-events: none; }
+@media (max-aspect-ratio: 1/1) { .touch.right { flex-direction: column; align-items: center; gap: 10px; } }
+.sbtn.down { background: rgba(244,241,232,.3); border-color: rgba(244,241,232,.7); }
 .touch.right { right: calc(14px + env(safe-area-inset-right, 0px)); }
 .tbtn { width: 74px; height: 74px; border-radius: 50%; border: 2px solid rgba(244,241,232,.35); background: rgba(22,25,33,.55); color: var(--ink); font: 800 14px/1 var(--font-display); letter-spacing: .04em; text-transform: uppercase; display: grid; place-items: center; touch-action: none; padding: 0; -webkit-tap-highlight-color: transparent; }
 .tbtn svg { width: 30px; height: 30px; fill: currentColor; }
 .tbtn.boost { background: rgba(255,210,63,.88); color: #1A1D25; border-color: var(--yellow); width: 88px; height: 88px; font-size: 18px; }
 .tbtn.down { transform: scale(.94); background: rgba(244,241,232,.25); }
 .tbtn.boost.down { background: #fff3c4; }
-body.touchmode .hud-bl { bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
+body.touchmode .hud-bl { bottom: calc(clamp(96px, 15vh, 150px) + 30px + env(safe-area-inset-bottom, 0px)); }
 body.touchmode .hint { bottom: auto; top: calc(150px + env(safe-area-inset-top, 0px)); }
 body.touchmode .finish-btn { min-width: min(320px, 70vw); padding: 16px 22px; font-size: 16px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); }
 
@@ -359,7 +358,10 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
 <button class="finish-btn skip-btn" id="skipBtn" hidden>Skip replay <kbd class="kb">Enter</kbd><kbd class="pad">A</kbd></button>
 <button class="finish-btn" id="finishBtn" hidden>Finish <kbd class="kb">Enter</kbd><kbd class="pad">A</kbd></button>
 
-<div class="steerpad touch" id="touchL" hidden aria-label="Drag left or right to steer"><div class="steer-ring" id="steerRing"><i id="steerDot"></i></div><span class="steer-tip">Drag to steer</span></div>
+<div class="steerbtns touch" id="touchL" hidden>
+  <div class="sbtn" id="tLeft" aria-label="Steer left"><svg viewBox="0 0 24 24"><path d="M15.5 4 7 12l8.5 8 1.5-1.5L10 12l7-6.5z"/></svg></div>
+  <div class="sbtn" id="tRight" aria-label="Steer right"><svg viewBox="0 0 24 24"><path d="M8.5 4 17 12l-8.5 8L7 18.5 14 12 7 5.5z"/></svg></div>
+</div>
 <div class="touch right" id="touchR" hidden>
   <button class="tbtn" id="tBrake" aria-label="Brake">Brake</button>
   <button class="tbtn boost" id="tBoost" aria-label="Boost">Boost</button>
@@ -3193,7 +3195,7 @@ function updateHud() {
 
 /* ------------------------------------------------------------------ input */
 const keys = new Set();
-const touch = { steer: 0, brake: false, boost: false };
+const touch = { left: false, right: false, steer: 0, brake: false, boost: false };
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') setPadMode(false);
   if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'text') return; // typing a name
@@ -3224,20 +3226,16 @@ function bindTouch(id, prop) {
   el.addEventListener('lostpointercapture', off);
 }
 bindTouch('#tBrake', 'brake'); bindTouch('#tBoost', 'boost');
-// Drag to steer: put a thumb down anywhere on the left of the screen and slide; the further, the more lock
+// Two big steering buttons; a thumb can slide from one to the other without lifting
 {
-  const padEl = $('#touchL'), ring = $('#steerRing'), dot = $('#steerDot');
-  let id = null, x0 = 0, y0 = 0;
-  const span = () => Math.max(50, Math.min(window.innerWidth * 0.13, 110));
-  padEl.addEventListener('pointerdown', (e) => { e.preventDefault(); id = e.pointerId; x0 = e.clientX; y0 = e.clientY; padEl.classList.add('active', 'used'); ring.style.left = x0 + 'px'; ring.style.top = y0 + 'px'; dot.style.transform = ''; try { padEl.setPointerCapture(id); } catch (_) {} });
-  padEl.addEventListener('pointermove', (e) => {
-    if (e.pointerId !== id) return;
-    const d = THREE.MathUtils.clamp((e.clientX - x0) / span(), -1, 1);
-    touch.steer = -Math.sign(d) * Math.pow(Math.abs(d), 1.3); // a little softer near the centre
-    dot.style.transform = `translateX(${d * 38}px)`;
-  });
-  const end = (e) => { if (e.pointerId !== id) return; id = null; touch.steer = 0; padEl.classList.remove('active'); };
-  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) padEl.addEventListener(ev, end);
+  const box = $('#touchL'), bl = $('#tLeft'), br = $('#tRight');
+  const held = new Map(); // pointerId -> 'left' | 'right' | null
+  const which = (x, y) => { for (const [el, k] of [[bl, 'left'], [br, 'right']]) { const r = el.getBoundingClientRect(); if (x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 30 && y <= r.bottom + 20) return k; } return null; };
+  const apply = () => { touch.left = [...held.values()].includes('left'); touch.right = [...held.values()].includes('right'); bl.classList.toggle('down', touch.left); br.classList.toggle('down', touch.right); };
+  box.addEventListener('pointerdown', (e) => { e.preventDefault(); held.set(e.pointerId, which(e.clientX, e.clientY)); try { box.setPointerCapture(e.pointerId); } catch (_) {} apply(); });
+  box.addEventListener('pointermove', (e) => { if (!held.has(e.pointerId)) return; held.set(e.pointerId, which(e.clientX, e.clientY)); apply(); });
+  const end = (e) => { held.delete(e.pointerId); apply(); };
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) box.addEventListener(ev, end);
 }
 function enableTouch() {
   document.body.classList.add('touchmode');
@@ -3250,6 +3248,9 @@ window.addEventListener('pointerdown', () => setPadMode(false), { passive: true 
 function input() {
   const left = keys.has('arrowleft') || keys.has('a');
   const right = keys.has('arrowright') || keys.has('d');
+  // touch buttons ramp the wheel on and off rather than snapping to full lock
+  const want = (touch.left ? 1 : 0) - (touch.right ? 1 : 0), rate = want === 0 || Math.sign(want) !== Math.sign(touch.steer) ? 7 : 3.2;
+  touch.steer += THREE.MathUtils.clamp(want - touch.steer, -rate * STEP, rate * STEP);
   // phones accelerate for you; on a keyboard or controller you drive the throttle yourself
   const auto = document.body.classList.contains('touchmode') && !document.body.classList.contains('padmode');
   return {
@@ -3995,7 +3996,7 @@ function startRun() {
   hideCards();
   setUI('running');
   const tm = document.body.classList.contains('touchmode') && !document.body.classList.contains('padmode'), pm = document.body.classList.contains('padmode');
-  $('#hint').textContent = tm ? 'Drag on the left to steer. Hold Boost for speed; it slowly refills.' : pm ? 'RT to accelerate, LT to brake, A for boost (it slowly refills).' : '↑ to accelerate, ↓ to brake and reverse, Space for boost (it slowly refills).';
+  $('#hint').textContent = tm ? 'Steer with the big buttons bottom-left. Hold Boost for speed; it slowly refills.' : pm ? 'RT to accelerate, LT to brake, A for boost (it slowly refills).' : '↑ to accelerate, ↓ to brake and reverse, Space for boost (it slowly refills).';
   $('#hint').hidden = false;
   setTimeout(() => { if (state === 'running' && !player.crashed) $('#hint').hidden = true; }, 4500);
   cam.pos.set(START_X - 12, HILL_H + 6, ROUTE_Z + LANE); cam.look.set(START_X + 20, HILL_H, ROUTE_Z + LANE);
