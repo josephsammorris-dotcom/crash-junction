@@ -1286,6 +1286,9 @@ function solidPaint(colour, metal = 0.55, rough = 0.34) {
 }
 const glassDeformMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.03, envMapIntensity: 1.8, clearcoat: 1, clearcoatRoughness: 0 });
 glassDeformMat.userData.base = new THREE.Color('#0b1015');
+// your car's glass: see-through, lightly tinted, with strong sky reflections, so the cabin shows
+const playerGlassMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.02, envMapIntensity: 1.5, clearcoat: 1, clearcoatRoughness: 0, specularIntensity: 0.8, transparent: true, opacity: 0.26, depthWrite: false });
+playerGlassMat.userData.base = new THREE.Color('#6f8494');
 const crackTex = canvasTex(256, 256, (g, w, h) => {
   g.fillStyle = '#5b6670'; g.fillRect(0, 0, w, h);
   g.strokeStyle = 'rgba(235,240,245,0.9)'; g.lineWidth = 1.2;
@@ -1413,7 +1416,8 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   const L = t.L, W = t.W, B = -t.H / 2;
   const paint = paintMat(colour);
   const hull = registerDeform(parts, lowerBody(L, W, P.top, P.bottom, P.axles, P.r), paint, 0, B, 0, inner);
-  parts.glass.push(registerDeform(parts, cabinGeo(W, P.cab), glassDeformMat, 0, B, 0, inner));
+  const glassMesh = registerDeform(parts, cabinGeo(W, P.cab), isPlayer ? playerGlassMat : glassDeformMat, 0, B, 0, inner);
+  parts.glass.push(glassMesh); if (isPlayer) glassMesh.renderOrder = 3;
   registerDeform(parts, cabinGeo(W, P.cab, 0, 0.05), isPlayer ? paintMat('#16181c') : paint, 0, B, 0, inner).userData.roof = true;
   parts.cab = { c: P.cab, B, cz: 0, W, pillars: true, seats: type === 'pickup' ? [0.05] : [-0.1, -0.95] };
   parts.plastic = true;
@@ -1455,6 +1459,55 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
     // front splitter and side skirts
     part(inner, new THREE.BoxGeometry(W * 0.96, 0.035, 0.24), trimMat, 0, noseY - 0.13, L / 2 - 0.04);
     for (const s of [-1, 1]) part(inner, new THREE.BoxGeometry(0.07, 0.1, L * 0.46), trimMat, s * (W / 2 - 0.01), B + P.bottom + 0.07, -0.05);
+    // ---- a proper cabin behind the glass: bucket seats, rear bench, dash, a roll cage and a helmeted driver
+    const cab = P.cab, yb = B + cab.belt, cw = W / 2 * cab.wb;
+    const fab = new THREE.MeshStandardMaterial({ color: '#202124', roughness: 0.95 }), red = new THREE.MeshStandardMaterial({ color: '#a8141c', roughness: 0.6 });
+    const cageMat = new THREE.MeshStandardMaterial({ color: '#c9ccd1', metalness: 0.7, roughness: 0.35 });
+    part(inner, new THREE.BoxGeometry(cw * 2 - 0.06, 0.012, cab.zf0 - cab.zr0 - 0.1), fab, 0, yb + 0.006, (cab.zf0 + cab.zr0) / 2); // floor of the greenhouse hides the body inside
+    part(inner, new THREE.BoxGeometry(cw * 2 - 0.1, 0.13, 0.32), fab, 0, yb + 0.06, cab.zf0 - 0.3); // dash
+    steeringWheel(inner, 0.38, yb + 0.2, cab.zf0 - 0.5);
+    for (const sx of [-1, 1]) {
+      const x = sx * 0.38;
+      const back = part(inner, new RoundedBoxGeometry(0.46, 0.4, 0.1, 2, 0.04), fab, x, yb + 0.2, -0.42); back.rotation.x = -0.12;
+      for (const b of [-1, 1]) part(inner, new THREE.BoxGeometry(0.05, 0.34, 0.12), red, x + b * 0.21, yb + 0.18, -0.41).rotation.x = -0.12; // bolsters
+      part(inner, new RoundedBoxGeometry(0.22, 0.12, 0.09, 2, 0.03), fab, x, yb + 0.43, -0.47);
+    }
+    part(inner, new RoundedBoxGeometry(cw * 2 - 0.25, 0.28, 0.12, 2, 0.04), fab, 0, yb + 0.14, -1.02).rotation.x = -0.25; // rear bench
+    part(inner, new THREE.BoxGeometry(cw * 2 - 0.2, 0.02, 0.3), fab, 0, yb + 0.02, cab.zr0 + 0.22); // parcel shelf
+    // the driver (left-hand drive): race suit and a white helmet with a dark visor
+    part(inner, new RoundedBoxGeometry(0.42, 0.22, 0.24, 2, 0.08), new THREE.MeshStandardMaterial({ color: '#1d3f8f', roughness: 0.8 }), 0.38, yb + 0.12, -0.3);
+    const helm = part(inner, new THREE.SphereGeometry(0.135, 20, 14), new THREE.MeshPhysicalMaterial({ color: '#f2f2ee', roughness: 0.25, clearcoat: 1 }), 0.38, yb + 0.33, -0.3);
+    part(inner, new THREE.SphereGeometry(0.137, 20, 8, -Math.PI * 0.35, Math.PI * 0.7, Math.PI * 0.38, Math.PI * 0.2), new THREE.MeshStandardMaterial({ color: '#0d0e10', metalness: 0.6, roughness: 0.15 }), 0.38, yb + 0.33, -0.3);
+    part(inner, new THREE.BoxGeometry(0.03, 0.03, 0.27), red, 0.38, yb + 0.44, -0.3);
+    // roll cage: main hoop behind the front seats, a diagonal, and stays back to the rear
+    const hz = -0.62, hx = cw - 0.1, top = yb + 0.43;
+    for (const sx of [-1, 1]) {
+      bar(inner, new THREE.Vector3(sx * hx, yb, hz), new THREE.Vector3(sx * (hx - 0.08), top, hz), 0.045, cageMat);
+      bar(inner, new THREE.Vector3(sx * (hx - 0.08), top, hz), new THREE.Vector3(sx * (hx - 0.02), yb + 0.03, cab.zr0 + 0.25), 0.04, cageMat);
+    }
+    bar(inner, new THREE.Vector3(-(hx - 0.08), top, hz), new THREE.Vector3(hx - 0.08, top, hz), 0.045, cageMat);
+    bar(inner, new THREE.Vector3(hx, yb, hz), new THREE.Vector3(-(hx - 0.08), top, hz), 0.04, cageMat);
+    // ---- tail-light clusters: dark bezels, twin LED rings, reversing lamps and indicators; a third brake light on the roof
+    const rz = -L / 2 + 0.07, yR = B + lerpT(P.top, -0.95) - 0.08, sR = W * 0.36;
+    const bezel = new THREE.MeshPhysicalMaterial({ color: '#141518', metalness: 0.8, roughness: 0.25, clearcoat: 1 });
+    parts.revMat = new THREE.MeshStandardMaterial({ color: '#cfd3d6', emissive: '#ffffff', emissiveIntensity: 0.05, roughness: 0.1 });
+    const amber = new THREE.MeshStandardMaterial({ color: '#7a4304', emissive: '#ff8a10', emissiveIntensity: 0.15, roughness: 0.15 });
+    const ledMat = parts.tailMat;
+    // the lamp bodies become smoked red lenses; the LED rings and the roof light do the glowing
+    const lens = new THREE.MeshPhysicalMaterial({ color: '#4a0608', roughness: 0.08, metalness: 0.1, clearcoat: 1, transparent: true, opacity: 0.92 });
+    for (const tl of parts.tails) tl.material = lens;
+    ledMat.emissiveIntensity = TAIL_DIM;
+    for (const sx of [-1, 1]) {
+      part(inner, new RoundedBoxGeometry(0.46, 0.27, 0.05, 2, 0.02), bezel, sx * sR, yR - 0.04, rz + 0.01);
+      for (const dx of [-0.095, 0.095]) { part(inner, new THREE.TorusGeometry(0.045, 0.013, 8, 22), ledMat, sx * sR + dx, yR, rz - 0.05); part(inner, new THREE.CircleGeometry(0.02, 12), ledMat, sx * sR + dx, yR, rz - 0.047).rotation.y = Math.PI; }
+      part(inner, new RoundedBoxGeometry(0.15, 0.06, 0.03, 2, 0.01), parts.revMat, sx * (sR - 0.1), yR - 0.12, rz - 0.02);
+      part(inner, new RoundedBoxGeometry(0.11, 0.06, 0.03, 2, 0.01), amber, sx * (sR + 0.1), yR - 0.12, rz - 0.02);
+      part(inner, new THREE.BoxGeometry(0.13, 0.04, 0.012), new THREE.MeshStandardMaterial({ color: '#6b0a0a', emissive: '#ff2010', emissiveIntensity: 0.3 }), sx * W * 0.4, noseY + 0.02, -L / 2 - 0.054); // bumper reflectors
+    }
+    part(inner, new THREE.BoxGeometry(0.46, 0.035, 0.03), ledMat, 0, B + cab.roof - 0.035, cab.zr1 - 0.03);
+    // ---- rear diffuser with fins
+    part(inner, new THREE.BoxGeometry(W * 0.62, 0.04, 0.32), trimMat, 0, B + P.bottom + 0.06, -L / 2 + 0.06);
+    for (let i = -2; i <= 2; i++) part(inner, new THREE.BoxGeometry(0.018, 0.1, 0.28), trimMat, i * 0.14, B + P.bottom + 0.02, -L / 2 + 0.05);
     // twin exhausts poking out under the rear bumper, with sooty inner pipes
     parts.exhaust = [];
     const yE = noseY - 0.1, zE = -L / 2 + 0.02, soot = new THREE.MeshStandardMaterial({ color: '#0c0c0d', roughness: 0.9 });
@@ -4058,6 +4111,9 @@ function stepSim(dt) {
     if (boosting) { player.boost = Math.max(0, player.boost - dt / CFG.boostTime); player.boostIdle = 0; }
     else if ((player.boostIdle = (player.boostIdle || 0) + dt) > 1.5) player.boost = Math.min(1, player.boost + dt / CFG.boostRegen); // creeps back after a pause
     driveCar(dt, inp, boosting);
+    const PP = player.veh.parts;
+    if (PP.tailMat) PP.tailMat.emissiveIntensity = inp.brake && player.u > 0.5 ? TAIL_BRAKE : TAIL_DIM;
+    if (PP.revMat) PP.revMat.emissiveIntensity = player.u < -0.3 ? 4 : 0.05;
     const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
     pb.velocity.x = fx * player.u + fz * player.vl;
     pb.velocity.z = fz * player.u - fx * player.vl;
