@@ -1312,6 +1312,13 @@ const rimFace = new THREE.MeshStandardMaterial({ metalness: 0.9, roughness: 0.3,
 }) });
 const plateTex = canvasTex(128, 64, (g) => { g.fillStyle = '#f2efe6'; g.fillRect(0, 0, 128, 64); g.fillStyle = '#7a2a1d'; g.fillRect(0, 0, 128, 12); g.fillStyle = '#123'; g.font = 'bold 30px Arial'; g.textAlign = 'center'; g.fillText('MSA 4X7', 64, 50); });
 const plateMat = new THREE.MeshStandardMaterial({ map: plateTex, roughness: 0.4, metalness: 0.2 });
+const crashPlateTex = canvasTex(256, 128, (g) => {
+  g.fillStyle = '#f4f1e8'; g.fillRect(0, 0, 256, 128);
+  g.strokeStyle = '#1a2a44'; g.lineWidth = 6; g.strokeRect(5, 5, 246, 118);
+  g.fillStyle = '#9a1c1c'; g.font = 'bold 20px Arial'; g.textAlign = 'center'; g.fillText('NEVADA', 128, 30);
+  g.fillStyle = '#14233d'; g.font = 'bold 66px Arial'; g.fillText('CRASH', 128, 102);
+});
+const crashPlateMat = new THREE.MeshStandardMaterial({ map: crashPlateTex, roughness: 0.35, metalness: 0.25 });
 
 function registerDeform(parts, g, mat, x, y, z, parent) {
   const n = g.attributes.position.count, base = mat.userData.base || new THREE.Color(1, 1, 1);
@@ -1423,11 +1430,13 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   parts.plastic = true;
   // pillars in body colour
   const c = P.cab, hw = (k) => W / 2 * (c.wb + (c.wt - c.wb) * k) + 0.012;
-  const pm = isPlayer ? solidPaint('#16181c') : solidPaint(colour);
+  const pm = isPlayer ? solidPaint('#0e0f11', 0.3, 0.12) : solidPaint(colour);
+  // your car: slim gloss-black pillars set into the glass line and running down into the body, like the real thing
+  const pIn = isPlayer ? 0.03 : 0, pS = isPlayer ? 0.6 : 1, pB = isPlayer ? -0.06 : 0;
   for (const s of [-1, 1]) {
-    strut(inner, new THREE.Vector3(s * hw(0), B + c.belt, c.zf0), new THREE.Vector3(s * hw(1), B + c.roof, c.zf1), 0.08, pm);
-    strut(inner, new THREE.Vector3(s * hw(0), B + c.belt, c.zr0), new THREE.Vector3(s * hw(1), B + c.roof, c.zr1), 0.12, pm);
-    if (type !== 'pickup') strut(inner, new THREE.Vector3(s * hw(0), B + c.belt, -0.32), new THREE.Vector3(s * hw(1), B + c.roof, -0.3), 0.08, pm);
+    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zf0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof, c.zf1), 0.08 * pS, pm);
+    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zr0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof, c.zr1), 0.12 * pS, pm);
+    if (type !== 'pickup') strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, -0.32), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof, -0.3), 0.08 * pS, pm);
     part(inner, new RoundedBoxGeometry(0.1, 0.13, 0.2, 2, 0.03), pm, s * (W / 2 + 0.06), B + c.belt + 0.08, c.zf0 - 0.12);
   }
   // hood that can buckle open
@@ -1447,7 +1456,8 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   if (type !== 'pickup') parts.bumpR.userData.melts = true;
   part(inner, new RoundedBoxGeometry(W * 0.42, type === 'pickup' ? 0.36 : 0.18, 0.06, 2, 0.02), trimMat, 0, B + lerpT(P.top, 0.97) - (type === 'pickup' ? 0.24 : 0.12), L / 2 - 0.03);
   part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, noseY, L / 2 + 0.06);
-  part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + lerpT(P.top, -0.98) - 0.14, -L / 2 + 0.03).rotation.y = Math.PI;
+  if (isPlayer) part(inner, new THREE.BoxGeometry(0.36, 0.18, 0.02), crashPlateMat, 0, B + lerpT(P.top, -0.98) - 0.06, -L / 2 + 0.005).rotation.y = Math.PI;
+  else part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + lerpT(P.top, -0.98) - 0.14, -L / 2 + 0.03).rotation.y = Math.PI;
   lamps(parts, inner, L / 2 - 0.1, -L / 2 + 0.07, B + lerpT(P.top, 0.93) - 0.07, B + lerpT(P.top, -0.95) - 0.08, W * 0.33, W * 0.36);
   part(inner, new THREE.BoxGeometry(W * 0.9, 0.12, L * 0.8), underMat, 0, B + P.bottom + 0.04, 0);
   for (const az of P.axles) for (const s of [-1, 1]) makeWheel(parts, inner, s * (W / 2 - 0.16), B + P.r, az, P.r, type === 'pickup' ? 0.3 : 0.24, az > 0);
@@ -2600,7 +2610,8 @@ function driveCar(dt, inp, boosting) {
     if (Fx < 0) { Fxf = Math.max(Fxf, -0.85 * capF); Fxr = Math.max(Fxr, -0.5 * capR); } // ABS keeps some steering grip, the rear more
     const uF = Math.min(0.92, Math.abs(Fxf) / capF), uR = Math.min(0.92, Math.abs(Fxr) / capR);
     const af = d - Math.atan2(v + K.a * r, ue), ar = -Math.atan2(v - K.b * r, ue);
-    const Fyf = pac(af, capF, K.Bf) * Math.sqrt(1 - uF * uF), Fyr = pac(ar, capR, K.Br) * Math.sqrt(1 - uR * uR);
+    const still = Math.min(1, Math.abs(u) / 2.5); // tyres can't push a car sideways or turn it when it isn't rolling
+    const Fyf = pac(af, capF, K.Bf) * Math.sqrt(1 - uF * uF) * still, Fyr = pac(ar, capR, K.Br) * Math.sqrt(1 - uR * uR) * still;
     const fxe = Fx < 0 ? Fxf + Fxr : Math.min(Fx, (capF + capR) * 0.92);
     const du = (fxe - Fyf * Math.sin(d)) / K.m + v * r - 0.0004 * u * Math.abs(u);
     const dv = (Fyf * Math.cos(d) + Fyr) / K.m - u * r;
@@ -2613,6 +2624,7 @@ function driveCar(dt, inp, boosting) {
     dr += (rWant - r) * K.assist * Math.min(1, ue / 10);
     P.u += du * h; P.vl += dv * h; P.r += dr * h; P.yaw += P.r * h;
     if (P.u < 0) { P.r = P.u * d / L; P.vl *= Math.exp(-h * 8); } // reversing: simple, no slides
+    else if (P.u < 0.4) { P.r = P.u * d / L; P.vl *= Math.exp(-h * 25); } // at a standstill: it just sits there
     else if (Math.abs(P.u) < 3) { const k = Math.exp(-h * 6); P.vl *= k; P.r *= Math.exp(-h * 3); } // no spinning on the spot
     if (!throttle && !reverse && Math.abs(P.u) < 0.15 && Math.sign(P.u) !== Math.sign(Fx || 1)) P.u = 0;
     ax = du - v * r; ay = dv + u * r;
