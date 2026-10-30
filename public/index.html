@@ -1425,7 +1425,9 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   const hull = registerDeform(parts, lowerBody(L, W, P.top, P.bottom, P.axles, P.r), paint, 0, B, 0, inner);
   const glassMesh = registerDeform(parts, cabinGeo(W, P.cab), isPlayer ? playerGlassMat : glassDeformMat, 0, B, 0, inner);
   parts.glass.push(glassMesh); if (isPlayer) glassMesh.renderOrder = 3;
-  registerDeform(parts, cabinGeo(W, P.cab, 0, 0.05), isPlayer ? paintMat('#16181c') : paint, 0, B, 0, inner).userData.roof = true;
+  const roofM = registerDeform(parts, cabinGeo(W, P.cab, 0, isPlayer ? 0.075 : 0.05), isPlayer ? paintMat('#16181c') : paint, 0, B, 0, inner);
+  roofM.userData.roof = true;
+  if (isPlayer) { roofM.scale.set(1.07, 1, 1.07); roofM.position.z += 0.035; roofM.position.y -= 0.012; } // a slightly larger roof that caps the tops of the pillars
   parts.cab = { c: P.cab, B, cz: 0, W, pillars: true, seats: type === 'pickup' ? [0.05] : [-0.1, -0.95] };
   parts.plastic = true;
   // pillars in body colour
@@ -1434,9 +1436,9 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   // your car: slim gloss-black pillars set into the glass line and running down into the body, like the real thing
   const pIn = isPlayer ? 0.03 : 0, pS = isPlayer ? 0.6 : 1, pB = isPlayer ? -0.06 : 0;
   for (const s of [-1, 1]) {
-    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zf0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof, c.zf1), 0.08 * pS, pm);
-    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zr0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof, c.zr1), 0.12 * pS, pm);
-    if (type !== 'pickup') strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, -0.32), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof, -0.3), 0.08 * pS, pm);
+    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zf0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof - (isPlayer ? 0.03 : 0), c.zf1), 0.08 * pS, pm);
+    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zr0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof - (isPlayer ? 0.03 : 0), c.zr1), 0.12 * pS, pm);
+    if (type !== 'pickup') strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, -0.32), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof - (isPlayer ? 0.03 : 0), -0.3), 0.08 * pS, pm);
     part(inner, new RoundedBoxGeometry(0.1, 0.13, 0.2, 2, 0.03), pm, s * (W / 2 + 0.06), B + c.belt + 0.08, c.zf0 - 0.12);
   }
   // hood that can buckle open
