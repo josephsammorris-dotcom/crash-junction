@@ -499,7 +499,7 @@ const CFG = {
   steerRate: 1.15,
   damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 1.2, blur: true, dof: true, rumble: true, warm: 40,
 };
-const MEDALS = { bronze: 2500000, silver: 5000000, gold: 9000000 };
+const MEDALS = { bronze: 3000000, silver: 6000000, gold: 11000000 }; // retuned for the physics rework (driver tests: best runs $11.4M and $12.3M)
 const fmt = (n) => '$' + Math.round(n).toLocaleString('en-US');
 const fmtShort = (n) => n >= 1e6 ? '$' + (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : '$' + Math.round(n / 1000) + 'K';
 $('#tBronze').textContent = fmtShort(MEDALS.bronze);
@@ -589,9 +589,8 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.62;
 const scene = new THREE.Scene();
 const HAZE = new THREE.Color('#d9cdb8');
-scene.fog = new THREE.FogExp2(HAZE, 0.00042);
-// Desert heat haze: on top of the light distance fog, a haze that hugs the ground and thickens past ~130 m,
-// so the roads fade out towards the horizon (and traffic emerges from it) while the mesa tops stay clear.
+scene.fog = new THREE.FogExp2(HAZE, 0.0011);
+// Plain distance fog only (the ground-hugging heat haze and shimmer were removed).
 THREE.ShaderChunk.fog_pars_vertex = '#ifdef USE_FOG\n varying float vFogDepth;\n varying float vFogY;\n#endif';
 THREE.ShaderChunk.fog_vertex = '#ifdef USE_FOG\n vFogDepth = - mvPosition.z;\n vFogY = (transpose(mat3(viewMatrix)) * (mvPosition.xyz - viewMatrix[3].xyz)).y;\n#endif';
 THREE.ShaderChunk.fog_pars_fragment = '#ifdef USE_FOG\n uniform vec3 fogColor;\n varying float vFogDepth;\n varying float vFogY;\n #ifdef FOG_EXP2\n uniform float fogDensity;\n #else\n uniform float fogNear;\n uniform float fogFar;\n #endif\n#endif';
@@ -601,9 +600,6 @@ THREE.ShaderChunk.fog_fragment = `#ifdef USE_FOG
   #else
     float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
   #endif
-  float hzD = max( vFogDepth - 130.0, 0.0 ) / 240.0;
-  float haze = 0.9 * ( 1.0 - exp( - hzD * hzD ) ) * exp( - max( vFogY - 2.0, 0.0 ) / 70.0 );
-  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * vec3( 0.86, 0.8, 0.72 ), haze );
   gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
 #endif`;
 const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 5000);
@@ -736,10 +732,6 @@ const fxPass = new ShaderPass({
     float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
     void main(){
       vec2 uv = vUv, asp = vec2(uAspect, 1.0);
-      float below = uHz - uv.y;
-      float band = smoothstep(-0.004, 0.01, below) * (1.0 - smoothstep(0.015, 0.13, below));
-      uv.x += sin(uv.y * 240.0 + uTime * 2.6 + sin(uv.x * 9.0 + uTime) * 2.0) * 0.0011 * band * uShim;
-      uv.y += sin(uv.x * 85.0 - uTime * 1.7) * 0.0004 * band * uShim;
       vec2 d = uv - 0.5; float ca = uCA * (dot(d, d) * 4.0 + 0.15) + 0.0004 * dot(d, d) * 4.0;
       vec3 c = vec3(texture2D(tDiffuse, uv + d * ca).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - d * ca).b);
       if (uOn > 0.5 && uFlare > 0.0) {
@@ -1550,28 +1542,39 @@ function roundedDense(w, h, d, r, res = 0.3) {
   });
 }
 const lerpT = (tab, w) => { for (let i = 0; i < tab.length - 1; i++) { const [w0, y0] = tab[i], [w1, y1] = tab[i + 1]; if (w <= w0 && w >= w1) return y0 + (y1 - y0) * (w - w0) / (w1 - w0); } return tab[tab.length - 1][1]; };
-// Car body below the windows: profile table of heights (from ground) along the length, wheel arches cut out
+// Car body below the windows: profile table of heights (from ground) along the length, wheel arches cut out.
+// bodyHalfX gives the skin's half-width at a point, so the doors (separate panels) sit exactly on the same surface.
+function bodyHalfX(W, wn, hh, z, axles, r) {
+  const ends = THREE.MathUtils.smoothstep(Math.abs(wn), 0.7, 1);
+  const plan = 1 - 0.16 * Math.pow(ends, 1.8);                                   // corners rounded off in plan
+  const tuck = 1 - 0.085 * (1 - hh) ** 2.2;                                     // sills tuck under
+  const shoulder = hh > 0.76 ? 1 - 0.13 * ((hh - 0.76) / 0.24) ** 1.7 : 1;     // rolls over into the window line
+  const crease = 1 + 0.014 * Math.exp(-(((hh - 0.66) / 0.06) ** 2));             // a crisp character line along the flank
+  let flare = 0;                                                                  // wheel-arch flares
+  for (const az of axles) { const dz = Math.abs(z - az), R = r + 0.33; if (dz < R) flare = Math.max(flare, (1 - (dz / R) ** 2) * Math.exp(-(((hh - 0.42) / 0.3) ** 2))); }
+  return W / 2 * plan * tuck * shoulder * crease * (1 + 0.032 * flare);
+}
 function lowerBody(L, W, top, bottom, axles, r) {
-  return sculpt([12, 7, 30], (v, u, h, w) => {
+  return sculpt([20, 12, 52], (v, u, h, w) => {
     const z = w * L / 2;
-    let yb = bottom + (Math.abs(w) > 0.86 ? 0.2 * ((Math.abs(w) - 0.86) / 0.14) ** 2 : 0);
-    for (const az of axles) { const R = r + 0.07, dz = z - az; if (Math.abs(dz) < R) yb = Math.max(yb, r + Math.sqrt(R * R - dz * dz) * 0.97); }
+    let yb = bottom + (Math.abs(w) > 0.84 ? 0.24 * ((Math.abs(w) - 0.84) / 0.16) ** 2 : 0);
+    for (const az of axles) { const R = r + 0.08, dz = z - az; if (Math.abs(dz) < R) yb = Math.max(yb, r + Math.sqrt(R * R - dz * dz) * 0.97); }
     const yt = lerpT(top, w);
-    const y = yb + h * Math.max(0.02, yt - yb);
-    const ends = THREE.MathUtils.smoothstep(Math.abs(w), 0.72, 1);
-    const plan = 1 - 0.13 * ends * ends, tuck = 1 - 0.06 * (1 - h) ** 2, shoulder = h > 0.78 ? 1 - 0.11 * ((h - 0.78) / 0.22) ** 2 : 1;
-    v.set(u * W / 2 * plan * tuck * shoulder, y, z);
+    // the top surface crowns slightly across its width
+    const y = yb + h * Math.max(0.02, yt - yb) + (h > 0.9 ? 0.03 * (1 - u * u) * (h - 0.9) / 0.1 : 0);
+    v.set(u * bodyHalfX(W, w, h, z, axles, r), y, z);
   });
 }
-// The glasshouse: raked windscreen, tumblehome, rounded roof edges
+// The glasshouse: raked, curved windscreen, tumblehome, a crowned roof with rounded edges
 function cabinGeo(W, c, yOff = 0, thick = null) {
-  return sculpt([8, 5, 14], (v, u, h, w) => {
+  return sculpt([12, 7, 20], (v, u, h, w) => {
     const hh = thick ? 1 : h;
-    const k = Math.pow(hh, 0.9);
-    const zf = c.zf0 + (c.zf1 - c.zf0) * k, zr = c.zr0 + (c.zr1 - c.zr0) * k;
+    const k = Math.pow(hh, 0.9), bow = 1 - u * u;
+    const zf = c.zf0 + (c.zf1 - c.zf0) * k + 0.07 * bow * (1 - 0.5 * hh), zr = c.zr0 + (c.zr1 - c.zr0) * k - 0.05 * bow * (1 - 0.5 * hh);
     const z = zr + (w + 1) / 2 * (zf - zr);
-    const y = thick ? c.roof - 0.025 + h * thick : c.belt + h * (c.roof - c.belt);
-    const half = W / 2 * (c.wb + (c.wt - c.wb) * hh) * (hh > 0.86 ? 1 - 0.12 * ((hh - 0.86) / 0.14) ** 2 : 1) * (thick ? 1.01 : 1);
+    const crown = 0.045 * bow * THREE.MathUtils.smoothstep(hh, 0.75, 1);
+    const y = (thick ? c.roof - 0.025 + h * thick : c.belt + h * (c.roof - c.belt)) + crown;
+    const half = W / 2 * (c.wb + (c.wt - c.wb) * hh) * (hh > 0.84 ? 1 - 0.14 * ((hh - 0.84) / 0.16) ** 2 : 1) * (thick ? 1.01 : 1);
     v.set(u * half, y + yOff, z + (thick ? (w < 0 ? -0.04 : 0.02) : 0));
   });
 }
@@ -1599,6 +1602,7 @@ function makeWheel(parts, inner, x, y, z, r, wid, front, dual = false) {
   pivot.userData.r = r;
   parts.wheels.push({ mesh: pivot, spin, side: Math.sign(x), z, r, front });
 }
+const grilleMat = new THREE.MeshStandardMaterial({ color: '#08090a', roughness: 0.7, metalness: 0.2 });
 const pillarMat = new THREE.MeshStandardMaterial({ color: '#0d0e10', roughness: 0.55, metalness: 0, envMapIntensity: 0.15 });
 const headLensMat = new THREE.MeshPhysicalMaterial({ color: '#e4eaee', roughness: 0.04, metalness: 0, clearcoat: 1, clearcoatRoughness: 0, emissive: '#fff0d2', emissiveIntensity: 0.55, envMapIntensity: 2.4 });
 const headHousingMat = new THREE.MeshPhysicalMaterial({ color: '#16171a', metalness: 0.85, roughness: 0.22, clearcoat: 1 });
@@ -1665,8 +1669,7 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
     const yb0 = P.bottom, dz0 = type === 'pickup' ? -0.2 : -0.85, dz1 = Math.min(P.cab.zf0 - 0.03, 0.9);
     const shell = (z, hf) => { // outer skin of the hull at length z; hf 0 = sill, 1 = belt
       const wn = z / (L / 2), yt = lerpT(P.top, wn), ysill = yb0 + 0.14, ybelt = yt - 0.03, y = ysill + hf * (ybelt - ysill), hh = (y - yb0) / Math.max(0.02, yt - yb0);
-      const ends = THREE.MathUtils.smoothstep(Math.abs(wn), 0.72, 1), plan = 1 - 0.13 * ends * ends, tuck = 1 - 0.06 * (1 - hh) ** 2, shoulder = hh > 0.78 ? 1 - 0.11 * ((hh - 0.78) / 0.22) ** 2 : 1;
-      return { y, x: W / 2 * plan * tuck * shoulder };
+      return { y, x: bodyHalfX(W, wn, hh, z, P.axles, P.r) };
     };
     parts.doors = {};
     for (const sd of [1, -1]) {
@@ -1700,11 +1703,19 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   if (type === 'pickup') part(inner, new THREE.BoxGeometry(W - 0.26, 0.22, 2.25), trimMat, 0, B + 1.08, -1.66);
   // bumpers, grille, lights, plates
   const noseY = B + P.bottom + 0.2;
-  parts.bumpF = part(inner, new RoundedBoxGeometry(W * 0.97, 0.24, 0.26, 3, 0.09), type === 'pickup' ? chrome : solidPaint(colour), 0, noseY, L / 2 - 0.08);
+  parts.bumpF = part(inner, new RoundedBoxGeometry(W * 0.9, 0.24, 0.24, 4, 0.1), type === 'pickup' ? chrome : solidPaint(colour), 0, noseY, L / 2 - 0.1);
   if (type !== 'pickup') parts.bumpF.userData.melts = true;
-  parts.bumpR = part(inner, new RoundedBoxGeometry(W * 0.97, 0.24, 0.26, 3, 0.09), type === 'pickup' ? chrome : solidPaint(colour), 0, noseY + 0.02, -L / 2 + 0.08);
+  parts.bumpR = part(inner, new RoundedBoxGeometry(W * 0.9, 0.24, 0.24, 4, 0.1), type === 'pickup' ? chrome : solidPaint(colour), 0, noseY + 0.02, -L / 2 + 0.1);
   if (type !== 'pickup') parts.bumpR.userData.melts = true;
-  part(inner, new RoundedBoxGeometry(W * 0.42, type === 'pickup' ? 0.36 : 0.18, 0.06, 2, 0.02), trimMat, 0, B + lerpT(P.top, 0.97) - (type === 'pickup' ? 0.24 : 0.12), L / 2 - 0.03);
+  // grille: a dark recess with chrome-edged slats, a lower air intake in the bumper, and black sill trims
+  { const gw = W * (type === 'pickup' ? 0.5 : 0.42), gh = type === 'pickup' ? 0.36 : 0.18, gy = B + lerpT(P.top, 0.97) - (type === 'pickup' ? 0.24 : 0.12), gz = L / 2 - 0.03;
+    part(inner, new RoundedBoxGeometry(gw, gh, 0.06, 2, 0.02), grilleMat, 0, gy, gz);
+    const ns = type === 'pickup' ? 4 : 2;
+    for (let i = 0; i < ns; i++) part(inner, new THREE.BoxGeometry(gw - 0.04, 0.018, 0.02), type === 'pickup' ? chrome : trimMat, 0, gy - gh / 2 + gh * (i + 1) / (ns + 1), gz + 0.032);
+    part(inner, new RoundedBoxGeometry(gw + 0.03, gh + 0.03, 0.03, 2, 0.012), isPlayer ? trimMat : chrome, 0, gy, gz - 0.012);
+    if (type !== 'pickup') part(inner, new RoundedBoxGeometry(W * 0.5, 0.07, 0.04, 2, 0.02), grilleMat, 0, B + P.bottom + 0.17, L / 2 + 0.04);
+    for (const s of [-1, 1]) { const sill = part(inner, new THREE.BoxGeometry(0.03, 0.06, Math.abs(P.axles[0] - P.axles[1]) - 2 * P.r - 0.32), trimMat, s * (bodyHalfX(W, 0, 0.1, 0, P.axles, P.r) + 0.005), B + P.bottom + 0.09, (P.axles[0] + P.axles[1]) / 2); sill.castShadow = false; }
+  }
   part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, noseY, L / 2 + 0.06);
   if (isPlayer) part(inner, new THREE.BoxGeometry(0.36, 0.18, 0.02), crashPlateMat, 0, B + lerpT(P.top, -0.98) - 0.06, -L / 2 + 0.005).rotation.y = Math.PI;
   else part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + lerpT(P.top, -0.98) - 0.14, -L / 2 + 0.03).rotation.y = Math.PI;
@@ -1894,7 +1905,10 @@ function spinWheels(v, dt, steer) {
   for (const w of v.parts.wheels) {
     if (w.mesh.userData.detached) continue;
     w.spin.rotation.x += vl * dt / w.r;
-    if (w.front) w.mesh.rotation.y = steer;
+    if (w.bent) {
+      w.mesh.rotation.y = (w.front ? steer : 0) + w.bent.toe;
+      w.mesh.rotation.z = w.bent.camber + Math.sin(w.spin.rotation.x) * w.bent.wob;
+    } else if (w.front) w.mesh.rotation.y = steer;
   }
 }
 
@@ -1910,7 +1924,7 @@ function dent(veh, pointW, dirInW, depth, radius) {
   veh.group.quaternion.copy(veh.body.quaternion);
   veh.group.updateMatrixWorld(true);
   for (const m of veh.parts.deform) {
-    if (!m.visible || !m.parent) continue;
+    if (!m.visible || !m.parent || m.userData.off) continue;
     _lp.copy(pointW); m.worldToLocal(_lp);
     if (m.userData.bb.distanceToPoint(_lp) > radius) continue;
     m.getWorldQuaternion(_wq).invert();
@@ -1923,9 +1937,10 @@ function dent(veh, pointW, dirInW, depth, radius) {
       const dx = a[k] - _lp.x, dy = a[k + 1] - _lp.y, dz = a[k + 2] - _lp.z;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (d >= radius) continue;
-      const f = (1 - d / radius) ** 1.4;
-      const hh = hash3(o[k], o[k + 1], o[k + 2]);
-      const push = depth * f * (0.55 + 0.9 * hh);
+      const x = 1 - d / radius, f = x * x * (3 - 2 * x); // smooth crumple bowl
+      // smooth, low-frequency buckling (a per-vertex random push turns a dense panel into fur)
+      const hh = 0.5 + 0.5 * Math.sin(o[k] * 7.1 + o[k + 2] * 5.3 + o[k + 1] * 3.7) * Math.sin(o[k + 1] * 9.3 - o[k + 2] * 4.1);
+      const push = depth * f * (0.8 + 0.4 * hh);
       for (let c = 0; c < 3; c++) {
         let nv = a[k + c] + _ld.getComponent(c) * push;
         const ov = o[k + c];
@@ -1936,12 +1951,41 @@ function dent(veh, pointW, dirInW, depth, radius) {
         }
         a[k + c] = nv;
       }
-      const tgt = hh > 0.5 ? METAL : CREASE, tt = Math.min(1, f * 1.5) * (isGlass ? 0.4 : 0.9);
+      const tgt = f > 0.55 && hh > 0.35 ? METAL : CREASE, tt = (f > 0.55 ? Math.min(1, f * 1.4) : f * 0.7) * (isGlass ? 0.4 : 0.9);
       col.array[k] += (tgt.r - col.array[k]) * tt; col.array[k + 1] += (tgt.g - col.array[k + 1]) * tt; col.array[k + 2] += (tgt.b - col.array[k + 2]) * tt;
       touched = true;
     }
     if (touched) { pos.needsUpdate = true; col.needsUpdate = true; m.geometry.computeVertexNormals(); m.geometry.computeBoundingSphere(); }
   }
+}
+
+// Paint scraped back to bare metal: a streak along the body's length through the contact point (no denting)
+const _sp = new THREE.Vector3();
+function scrapePaint(veh, pointW, width, len) {
+  veh.group.position.copy(veh.body.position); veh.group.quaternion.copy(veh.body.quaternion); veh.group.updateMatrixWorld(true);
+  for (const m of veh.parts.deform) {
+    if (!m.visible || !m.parent || m.userData.off || veh.parts.glass.includes(m)) continue;
+    _sp.copy(pointW); m.worldToLocal(_sp);
+    if (m.userData.bb.distanceToPoint(_sp) > Math.max(width, len)) continue;
+    const pos = m.geometry.attributes.position.array, col = m.geometry.attributes.color, ca = col.array; let hit = false;
+    for (let i = 0, n = pos.length / 3; i < n; i++) {
+      const dx = (pos[i * 3] - _sp.x) / width, dy = (pos[i * 3 + 1] - _sp.y) / width, dz = (pos[i * 3 + 2] - _sp.z) / len, q = dx * dx + dy * dy + dz * dz;
+      if (q >= 1) continue;
+      const streak = 0.5 + 0.5 * Math.sin(pos[i * 3 + 1] * 61 + pos[i * 3] * 17);
+      const tt = (1 - q) * (0.45 + 0.55 * streak) * 0.85, tgt = streak > 0.75 ? CREASE : METAL;
+      ca[i * 3] += (tgt.r - ca[i * 3]) * tt; ca[i * 3 + 1] += (tgt.g - ca[i * 3 + 1]) * tt; ca[i * 3 + 2] += (tgt.b - ca[i * 3 + 2]) * tt; hit = true;
+    }
+    if (hit) col.needsUpdate = true;
+  }
+}
+// The lowest point of a body sliding on its side or roof, in world space
+const _lowW = new THREE.Vector3(), _lq = new THREE.Quaternion();
+function lowestPoint(v, out) {
+  const b = v.body; _lq.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+  _lowW.set(0, -1, 0).applyQuaternion(_lq.clone().invert());
+  const ax = Math.abs(_lowW.x) * v.t.W, ay = Math.abs(_lowW.y) * v.t.H, az = Math.abs(_lowW.z) * v.t.L;
+  if (ax >= ay && ax >= az) _lowW.set(Math.sign(_lowW.x) * v.t.W / 2, 0, 0); else if (ay >= az) _lowW.set(0, Math.sign(_lowW.y) * v.t.H / 2 + v.t.H * COM_DROP, 0); else _lowW.set(0, 0, Math.sign(_lowW.z) * v.t.L / 2);
+  return out.copy(_lowW).applyQuaternion(_lq).add(b.position);
 }
 
 /* ------------------------------------------------------------------ particles: soft smoke, dust and steam; additive sparks; solid debris */
@@ -2070,6 +2114,7 @@ function burst(point, n, colourMat, speed, kind = 'shard') {
 function detach(veh, mesh, dirOut, extraSpeed = 3, isWheel = false) {
   if (!mesh || !mesh.parent || mesh.userData.detached) return;
   mesh.userData.detached = true;
+  mesh.traverse((o) => { o.userData.off = true; });
   scene.attach(mesh);
   const bv = veh.body.velocity;
   const v = new THREE.Vector3(bv.x, Math.max(0, bv.y), bv.z).multiplyScalar(0.8).addScaledVector(dirOut, extraSpeed);
@@ -2136,7 +2181,7 @@ const blobGeo = new THREE.PlaneGeometry(1, 1); blobGeo.rotateX(-Math.PI / 2); SH
 const blobMesh = new THREE.InstancedMesh(blobGeo, new THREE.MeshBasicMaterial({ color: 0x120c06, alphaMap: blobTex, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }), BLOB_MAX);
 blobMesh.frustumCulled = false; blobMesh.renderOrder = 2; blobMesh.count = 0; scene.add(blobMesh);
 const SHADOW_DIR = new THREE.Vector3(-SUN_DIR.x, 0, -SUN_DIR.z).normalize();
-const _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion(), _bq2 = new THREE.Quaternion(), _bs = new THREE.Vector3(), _bpos = new THREE.Vector3(), _bf = new THREE.Vector3(), _lw = new THREE.Vector3();
+const _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion(), _bq2 = new THREE.Quaternion(), _bs = new THREE.Vector3(), _bpos = new THREE.Vector3(), _bf = new THREE.Vector3(), _lpw = new THREE.Vector3();
 let blobN = 0;
 function addBlob(g, t) {
   if (blobN >= BLOB_MAX || !g.visible) return;
@@ -2176,12 +2221,12 @@ function lampsOf(g, inner, parts, v, cam) {
   if (fc < -0.1 && parts.tails.length && !dead) {
     const braking = v ? (v.braking || (v.panic && v.panic.brake) || v.state === 'loose') : false;
     const k = THREE.MathUtils.smoothstep(-fc, 0.1, 0.8) * far;
-    if (braking || v === player.veh) for (const t of parts.tails) { _lw.copy(t.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 3.2, 0.25, 0.12, sz * 0.8, 0.5 * k * (braking ? 1 : 0.3)); }
+    if (braking || v === player.veh) for (const t of parts.tails) { _lpw.copy(t.position); _lpw.y += iy; _lpw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lpw.x, _lpw.y, _lpw.z, 3.2, 0.25, 0.12, sz * 0.8, 0.5 * k * (braking ? 1 : 0.3)); }
   }
   // hazard flashers on wrecks whose electrics survived
   if (v && v.state === 'loose' && !dead && !v.burnt && parts.heads.length && v.body && v.body.id % 3 !== 0) {
     const on = (Math.floor(realClock * 1.7 + (v.body.id & 7) * 0.13) & 1) === 0;
-    if (on) for (const arr of [parts.heads, parts.tails]) for (const h of arr) { _lw.copy(h.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 3.0, 1.35, 0.1, 0.55 + d * 0.008, 0.6 * far); }
+    if (on) for (const arr of [parts.heads, parts.tails]) for (const h of arr) { _lpw.copy(h.position); _lpw.y += iy; _lpw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lpw.x, _lpw.y, _lpw.z, 3.0, 1.35, 0.1, 0.55 + d * 0.008, 0.6 * far); }
   }
 }
 function updateVehicleFx() {
@@ -2321,7 +2366,7 @@ function makeBody(t, isPlayer) {
   body.collisionFilterMask = isPlayer ? MASK_ALL : MASK_DRIVEN;
   // Every vehicle has the same movement limits from birth: spin freely, pitch and roll sluggishly.
   // (Changing these at the moment of impact used to throw away half the collision's momentum.)
-  body.angularFactor.set(0.3, 1, 0.3);
+  body.angularFactor.set(0.42, 1, 0.42);
   body.linearFactor.set(1, 0.45, 1);
   body.allowSleep = false;
   body.linearDamping = 0.01;
@@ -2616,6 +2661,7 @@ function stabilise(b, v) {
 // so a car hit in the side is shoved and spins, a car hit from behind rolls on, and locked brakes make it skid.
 const GRAV = 9.82;
 const _f = new CANNON.Vec3(), _r = new CANNON.Vec3(), _rf = new CANNON.Vec3(), _rel = new CANNON.Vec3(), _imp = new CANNON.Vec3(), _vp = new CANNON.Vec3(), _up = new CANNON.Vec3();
+const _scrW = new THREE.Vector3();
 const LOCAL_Z = new CANNON.Vec3(0, 0, 1), LOCAL_X = new CANNON.Vec3(1, 0, 0), LOCAL_Y = new CANNON.Vec3(0, 1, 0);
 function restHeight(t) { return t.H / 2 - t.H * COM_DROP + 0.03; }
 function tyres(v, dt) {
@@ -2627,14 +2673,15 @@ function tyres(v, dt) {
   v.skid = 0;
   // Suspension: a spring and damper at each wheel holds the body at ride height
   if (_up.y > 0.55 && !(v.rolling && (v.rolling.t < 1.2 || _up.y < 0.95))) {
-    const rh = restHeight(t), mm = t.mass, kS = 92 * mm, cS = 1.4 * Math.sqrt(kS * mm / 4);
+    const rh = restHeight(t), mm = t.mass, kS = (heavy ? 92 : 70) * mm, cS = (heavy ? 1.4 : 1.1) * Math.sqrt(kS * mm / 4);
     for (let i = 0; i < 4; i++) {
       _rel.set((i & 1 ? 1 : -1) * t.W * 0.38, 0, (i & 2 ? 1 : -1) * t.L * 0.36); b.quaternion.vmult(_rel, _rel);
       const px = b.position.x + _rel.x, pz = b.position.z + _rel.z;
-      const comp = groundY(px, pz) + rh - (b.position.y + _rel.y);
+      const off = v.cornerOff && v.cornerOff[i];
+      const comp = groundY(px, pz) + rh - (off ? 0.24 : 0) - (b.position.y + _rel.y);
       if (comp < -0.3) continue;
       b.angularVelocity.cross(_rel, _vp);
-      const F = Math.max(0, kS * comp - cS * (b.velocity.y + _vp.y));
+      const F = Math.max(0, (off ? 0.35 : 1) * (kS * comp - cS * (b.velocity.y + _vp.y)));
       _imp.set(0, F, 0); b.applyForce(_imp, _rel);
     }
   }
@@ -2644,7 +2691,10 @@ function tyres(v, dt) {
       const sp = Math.hypot(b.velocity.x, b.velocity.z);
       if (sp > 0.01) { const k = Math.min(1, 0.55 * GRAV * dt / sp); b.velocity.x *= 1 - k; b.velocity.z *= 1 - k; }
       b.angularVelocity.y *= 0.97;
-      if (sp > 3) v.scrape = (v.scrape || 0) + dt;
+      if (sp > 3) {
+        v.scrape = (v.scrape || 0) + dt;
+        if ((v.scrapeT = (v.scrapeT || 0) - dt) < 0) { v.scrapeT = 0.12; scrapePaint(v, lowestPoint(v, _scrW), 0.4, 0.9); }
+      }
     }
     return;
   }
@@ -2668,7 +2718,8 @@ function tyres(v, dt) {
     // velocity of the tyre contact patch = v + ω × r
     b.angularVelocity.cross(_rel, _vp); _vp.vadd(b.velocity, _vp);
     let ax = _r;
-    if (side > 0 && steer) { _rf.set(_r.x * Math.cos(steer) - _f.x * Math.sin(steer), 0, _r.z * Math.cos(steer) - _f.z * Math.sin(steer)); ax = _rf; }
+    const st = (side > 0 ? steer : 0) + (v.toe ? v.toe[side] : 0);
+    if (st) { _rf.set(_r.x * Math.cos(st) - _f.x * Math.sin(st), 0, _r.z * Math.cos(st) - _f.z * Math.sin(st)); ax = _rf; }
     const s = _vp.x * ax.x + _vp.z * ax.z;
     // the trailer's nose rides on the fifth wheel; a locked tractor's drive axle has almost no side grip
     if (v.tractor && side > 0) continue;
@@ -2688,6 +2739,8 @@ function tyres(v, dt) {
   const vl = b.velocity.x * _f.x + b.velocity.z * _f.z;
   let longMu = v.isPlayer ? 0.06 : 0.025;
   longMu += 0.12 * Math.min(1, v.sev);
+  if (v.toe) longMu += 0.03 * (Math.abs(v.toe[1]) + Math.abs(v.toe[-1])) / 0.25; // bent wheels scrub
+  if (v.cornerOff) longMu += 0.08 * Object.keys(v.cornerOff).length; // a hub dragging on the tarmac
   if (locked) longMu = grip * (heavy ? 0.42 : 0.62);
   if (trailerShove) longMu = grip * 0.12;
   if (sand) longMu += 0.38; // tyres plough into soft sand
@@ -3154,6 +3207,30 @@ function tearDoor(v, dr, out) {
   }
   col.needsUpdate = true;
 }
+// Wheels: a hard knock bends the nearest one (toe and camber: the wreck pulls to that side and the rim wobbles),
+// a harder one tears it off and that corner drops onto its belly
+function nearestWheel(v, h, axle, side) {
+  _inv.set(v.body.quaternion.x, v.body.quaternion.y, v.body.quaternion.z, v.body.quaternion.w).invert();
+  _loc.set(h.point.x - v.body.position.x, h.point.y - v.body.position.y, h.point.z - v.body.position.z).applyQuaternion(_inv);
+  let best = null, bd = Infinity;
+  for (const w of v.parts.wheels) {
+    if (w.mesh.userData.detached || (axle && Math.sign(w.z) !== axle) || (side && w.side !== side)) continue;
+    const dd = Math.abs(w.z - _loc.z) + Math.abs(w.side * v.t.W / 2 - _loc.x) * 0.5; if (dd < bd) { bd = dd; best = w; }
+  }
+  return best;
+}
+function bendWheel(v, h, axle) {
+  const w = nearestWheel(v, h, axle, 0); if (!w || w.bent) return;
+  const hs = hash3(h.point.x, h.point.y, h.point.z); // deterministic (replays must match)
+  w.bent = { toe: (hs - 0.5) * 0.5, camber: -w.side * (0.12 + hs * 0.14), wob: 0.05 + hs * 0.05 };
+  (v.toe ||= { 1: 0, '-1': 0 })[w.z > 0 ? 1 : -1] += w.bent.toe * 0.5;
+}
+function dropWheel(v, w, out) {
+  detach(v, w.mesh, out, 4, true);
+  (v.flags.wheelOff ||= {})[w.z > 0 ? 1 : -1] = true;
+  (v.cornerOff ||= {})[(w.z > 0 ? 2 : 0) + (w.side > 0 ? 1 : 0)] = true;
+}
+function knockWheel(v, h, axle, out) { const w = nearestWheel(v, h, axle, 0); if (w && w.bent) dropWheel(v, w, out); }
 function zoneEffects(v, zone, h) {
   const d = v.zone[zone], P = v.parts, F = v.flags;
   const out = h.dirIn.clone().negate();
@@ -3163,16 +3240,22 @@ function zoneEffects(v, zone, h) {
     if (d > 0.22 && P.bumpF && !F.bumpF) { F.bumpF = true; detach(v, P.bumpF, out, 2.5); }
     if (d > 0.3 && P.bonnet && !F.bonnet) { F.bonnet = true; P.bonnet.pivot.rotation.x = -(0.45 + Math.random() * 0.55); P.bonnet.pivot.rotation.z = (Math.random() - 0.5) * 0.25; }
     if (d > 0.4) v.steam = true;
+    if (d > 0.62 && P.bonnet && !F.bonnetOff) { F.bonnetOff = true; detach(v, P.bonnet.pivot, out.clone().setY(0.6).normalize(), 5); }
+    if (d > 0.25) bendWheel(v, h, 1);
+    if (d > 0.75) knockWheel(v, h, 1, out);
   } else if (zone === 'rear') {
     if (d > 0.08 && !F.tails) { F.tails = true; P.tails.forEach((m) => { m.visible = false; }); burst(h.point, 5, null, 3, 'glass'); }
     if (d > 0.22 && P.bumpR && !F.bumpR) { F.bumpR = true; detach(v, P.bumpR, out, 2.5); }
     if (d > 0.35) shatter(v, 'rearscreen', h.point, 8);
     if (d > 0.3 && P.boot && !F.boot) { F.boot = true; P.boot.pivot.rotation.x = 0.45 + Math.random() * 0.6; P.boot.pivot.rotation.z = (Math.random() - 0.5) * 0.2; }
+    if (d > 0.62 && P.boot && !F.bootOff) { F.bootOff = true; detach(v, P.boot.pivot, out.clone().setY(0.6).normalize(), 4); }
+    if (d > 0.3) bendWheel(v, h, -1);
   } else if (zone === 'left' || zone === 'right') {
     const mir = P.mirrors && P.mirrors[zone]; if (mir && d > 0.08 && !F['mir' + zone]) { F['mir' + zone] = true; detach(v, mir, out, 3); }
     const dr = P.doors && P.doors[zone];
     if (dr && d > 0.2 && !F['door' + zone]) { F['door' + zone] = true; if (d > 0.42 || Math.random() < 0.3) tearDoor(v, dr, out); else dr.pivot.rotation.y = -dr.side * (0.6 + Math.random() * 0.8); }
     if (d > 0.15) shatter(v, 'side-' + zone, h.point, 12);
+    if (d > 0.18) bendWheel(v, h, 0);
     if (d > 0.5) {
       // knock off the wheel nearest the impact on that side
       const side = zone === 'left' ? 1 : -1;
@@ -3180,7 +3263,7 @@ function zoneEffects(v, zone, h) {
       _loc.set(h.point.x - v.body.position.x, h.point.y - v.body.position.y, h.point.z - v.body.position.z).applyQuaternion(_inv);
       let best = null, bd = Infinity;
       for (const w of P.wheels) if (w.side === side && !w.mesh.userData.detached) { const dd = Math.abs(w.z - _loc.z); if (dd < bd) { bd = dd; best = w; } }
-      if (best && bd < v.t.L * 0.35) { detach(v, best.mesh, out, 4, true); (v.flags.wheelOff ||= {})[best.z > 0 ? 1 : -1] = true; }
+      if (best && bd < v.t.L * 0.35) dropWheel(v, best, out);
     }
   } else if (zone === 'roof') {
     if (d > 0.15) shatter(v, 'roof', h.point, 14);
@@ -3197,9 +3280,10 @@ function applyHit(h) {
   // Localised crumple where the hit landed
   const zone = zoneOf(v, h.point, h.dirIn);
   const big = v.t.L > 8;
-  const depth = Math.min(big ? 1.2 : 0.85, 0.08 + h.vel * 0.042 * Math.sqrt(massFactor)) * (zone === 'roof' ? 1.4 : 1);
+  const depth = Math.min(big ? 1.35 : 1.05, 0.1 + h.vel * 0.052 * Math.sqrt(massFactor)) * (zone === 'roof' ? 1.4 : 1);
   const radius = (big ? 1.6 : 1.05) + Math.min(1.2, h.vel * 0.04);
   dent(v, h.point, h.dirIn, depth, radius);
+  if (h.vel > 3) scrapePaint(v, h.point, 0.25 + Math.min(0.35, h.vel * 0.02), Math.min(2.2, 0.5 + h.vel * 0.07));
   v.zone[zone] += add * 1.7;
   zoneEffects(v, zone, h);
   // Debris and sparks
@@ -3280,7 +3364,7 @@ function updateRoll(v, dt) {
     rumble(0.45, 0.7, 220);
   }
   const calm = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z) < 1.2 && b.angularVelocity.length() < 0.6;
-  if ((R.t > 3 && calm) || R.t > 10) { v.rolling = null; b.angularFactor.set(0.3, 1, 0.3); b.linearFactor.set(1, 0.45, 1); }
+  if ((R.t > 3 && calm) || R.t > 10) { v.rolling = null; b.angularFactor.set(0.42, 1, 0.42); b.linearFactor.set(1, 0.45, 1); }
 }
 
 function crash(e) {
