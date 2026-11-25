@@ -1475,7 +1475,7 @@ function carInterior(inner, B, cab, W, pickup) {
   };
   if (Math.random() < 0.9) person(0.38);
   if (Math.random() < 0.4) person(-0.38);
-  const m = new THREE.Mesh(BGU.mergeGeometries(geos), interiorMat); m.userData.melts = true; inner.add(m); return m;
+  const m = new THREE.Mesh(BGU.mergeGeometries(geos), interiorMat); m.userData.melts = true; m.userData.detail = true; inner.add(m); return m;
 }
 const crackTex = canvasTex(256, 256, (g, w, h) => {
   g.fillStyle = '#5b6670'; g.fillRect(0, 0, w, h);
@@ -1595,7 +1595,7 @@ function cabinGeo(W, c, yOff = 0, thick = null) {
 function strut(parent, a, b, s, mat) {
   const d = b.clone().sub(a), m = new THREE.Mesh(new THREE.BoxGeometry(s, s, d.length()), mat);
   m.position.copy(a).add(b).multiplyScalar(0.5); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d.normalize());
-  m.castShadow = true; parent.add(m); return m;
+  m.castShadow = true; m.userData.detail = true; parent.add(m); return m;
 }
 const wheelGeos = new Map();
 const SHARED_GEO = new Set(); // geometry reused by many vehicles: never disposed
@@ -1624,13 +1624,13 @@ function lamps(parts, inner, frontZ, rearZ, yF, yR, spreadF, spreadR, size = [0.
   const tailMat = new THREE.MeshStandardMaterial({ color: '#2a0504', emissive: '#ff1a0a', emissiveIntensity: TAIL_DIM, roughness: 0.15 });
   parts.tailMat = tailMat;
   for (const sx of [-1, 1]) {
-    const hl = new THREE.Mesh(new RoundedBoxGeometry(size[0], size[1], 0.08, 2, 0.03), headLensMat); hl.position.set(sx * spreadF, yF, frontZ + 0.015); inner.add(hl); parts.heads.push(hl);
-    const hs = new THREE.Mesh(new RoundedBoxGeometry(size[0] + 0.06, size[1] + 0.06, 0.07, 2, 0.025), headHousingMat); hs.position.set(sx * spreadF, yF, frontZ - 0.01); inner.add(hs);
-    const rf = new THREE.Mesh(new THREE.CylinderGeometry(size[1] * 0.3, size[1] * 0.3, 0.02, 12), chrome); rf.rotation.x = Math.PI / 2; rf.position.set(sx * spreadF - sx * size[0] * 0.12, yF, frontZ - 0.012); inner.add(rf);
-    const tl = new THREE.Mesh(new RoundedBoxGeometry(size[0] * 0.95, size[1] * 1.1, 0.08, 2, 0.03), tailMat); tl.position.set(sx * spreadR, yR, rearZ); inner.add(tl); parts.tails.push(tl);
+    const hl = new THREE.Mesh(new RoundedBoxGeometry(size[0], size[1], 0.08, 2, 0.03), headLensMat); hl.position.set(sx * spreadF, yF, frontZ + 0.015); hl.userData.rigid = true; inner.add(hl); parts.heads.push(hl);
+    const hs = new THREE.Mesh(new RoundedBoxGeometry(size[0] + 0.06, size[1] + 0.06, 0.07, 2, 0.025), headHousingMat); hs.position.set(sx * spreadF, yF, frontZ - 0.01); hs.userData.rigid = true; inner.add(hs);
+    const rf = new THREE.Mesh(new THREE.CylinderGeometry(size[1] * 0.3, size[1] * 0.3, 0.02, 12), chrome); rf.rotation.x = Math.PI / 2; rf.position.set(sx * spreadF - sx * size[0] * 0.12, yF, frontZ - 0.012); rf.userData.rigid = true; inner.add(rf);
+    const tl = new THREE.Mesh(new RoundedBoxGeometry(size[0] * 0.95, size[1] * 1.1, 0.08, 2, 0.03), tailMat); tl.position.set(sx * spreadR, yR, rearZ); tl.userData.rigid = true; inner.add(tl); parts.tails.push(tl);
   }
 }
-function part(parent, geo, mat, x, y, z) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m; }
+function part(parent, geo, mat, x, y, z) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; m.userData.rigid = true; parent.add(m); return m; }
 
 const PROFILES = {
   car: { top: [[1, 0.58], [0.97, 0.71], [0.92, 0.79], [0.86, 0.84], [0.36, 0.92], [0.3, 0.95], [-0.6, 0.95], [-0.86, 0.98], [-0.94, 0.93], [-0.98, 0.82], [-1, 0.66]], bottom: 0.2, r: 0.34, axles: [1.48, -1.38],
@@ -1906,7 +1906,9 @@ function buildVehicle(type, colour, isPlayer = false) {
     buildTrailer(!!t.trailer.tank, t.trailer, T.parts, T.inner);
     scene.add(T.outer);
     out.trailer = { group: T.outer, inner: T.inner, parts: T.parts, shardMat: new THREE.MeshStandardMaterial({ color: t.trailer.tank ? '#c9ced3' : '#eeeeec', metalness: 0.5, roughness: 0.4 }) };
+    T.parts.detailRef = detailList(T.parts, T.inner);
   }
+  A.parts.detailRef = detailList(A.parts, A.inner);
   return out;
 }
 // Wheels turn with the vehicle's speed; panicking drivers' front wheels turn into the swerve
@@ -1929,6 +1931,8 @@ function spinWheels(v, dt, steer) {
 
 /* ------------------------------------------------------------------ denting */
 const _lp = new THREE.Vector3(), _ld = new THREE.Vector3(), _wq = new THREE.Quaternion();
+const dirtyNormals = new Set();
+function flushNormals() { for (const g of dirtyNormals) { g.computeVertexNormals(); g.computeBoundingSphere(); } dirtyNormals.clear(); }
 function hash3(x, y, z) { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453; return s - Math.floor(s); }
 // Push the panel vertices near the impact point into the body, with a soft falloff and a little crinkle,
 // and scrape the paint so creases read as torn, buckled metal.
@@ -1969,9 +1973,29 @@ function dent(veh, pointW, dirInW, depth, radius) {
       col.array[k] += (tgt.r - col.array[k]) * tt; col.array[k + 1] += (tgt.g - col.array[k + 1]) * tt; col.array[k + 2] += (tgt.b - col.array[k + 2]) * tt;
       touched = true;
     }
-    if (touched) { pos.needsUpdate = true; col.needsUpdate = true; m.geometry.computeVertexNormals(); m.geometry.computeBoundingSphere(); }
+    if (touched) { pos.needsUpdate = true; col.needsUpdate = true; dirtyNormals.add(m.geometry); }
+  }
+  const inner = veh.inner; if (!inner) return;
+  _lp.copy(pointW); inner.worldToLocal(_lp);
+  inner.getWorldQuaternion(_wq).invert(); _ld.copy(dirInW).applyQuaternion(_wq).normalize();
+  const endZ = veh.t.L / 2 - 0.75;
+  for (let c = inner.children.length - 1; c >= 0; c--) {
+    const o = inner.children[c];
+    if (!o.isMesh || !o.userData.rigid || o.userData.off) continue;
+    const d = o.position.distanceTo(_lp);
+    if (d >= radius) continue;
+    const x = 1 - d / radius, f = x * x * (3 - 2 * x), push = depth * f * 0.9;
+    o.position.addScaledVector(_ld, push);
+    const side = Math.sign(o.position.x - _lp.x) || 1;
+    o.rotation.y += side * push * 0.5; o.rotation.z += (hash3(o.position.x, o.position.y, o.position.z) - 0.5) * push * 0.6;
+    o.userData.crush = (o.userData.crush || 0) + push;
+    if (o.userData.crush > 0.17 && (Math.abs(o.position.z) > endZ || o === veh.parts.mirrors?.left || o === veh.parts.mirrors?.right)) {
+      if (veh.parts.heads.includes(o) || veh.parts.tails.includes(o)) burst(pointW, 4, null, 3, 'glass');
+      detach(veh, o, _dOut.copy(dirInW).negate(), 2.5);
+    }
   }
 }
+const _dOut = new THREE.Vector3();
 
 // Paint scraped back to bare metal: a streak along the body's length through the contact point (no denting)
 const _sp = new THREE.Vector3();
@@ -2233,16 +2257,12 @@ function lampsOf(g, inner, parts, v, cam) {
   const iy = inner ? inner.position.y : 0;
   const sz = 0.55 + d * 0.013;
   if (fc < -0.1 && parts.tails.length && !dead) {
-    const braking = v ? (v.braking || (v.panic && v.panic.brake) || v.state === 'loose') : false;
+    const braking = v ? v.state !== 'loose' && (v.braking || (v.panic && v.panic.brake)) : false;
     const k = THREE.MathUtils.smoothstep(-fc, 0.1, 0.8) * far;
     if (braking || v === player.veh) for (const t of parts.tails) { _lpw.copy(t.position); _lpw.y += iy; _lpw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lpw.x, _lpw.y, _lpw.z, 3.2, 0.25, 0.12, sz * 0.8, 0.5 * k * (braking ? 1 : 0.3)); }
   }
-  // hazard flashers on wrecks whose electrics survived
-  if (v && v.state === 'loose' && !dead && !v.burnt && parts.heads.length && v.body && v.body.id % 3 !== 0) {
-    const on = (Math.floor(realClock * 1.7 + (v.body.id & 7) * 0.13) & 1) === 0;
-    if (on) for (const arr of [parts.heads, parts.tails]) for (const h of arr) { _lpw.copy(h.position); _lpw.y += iy; _lpw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lpw.x, _lpw.y, _lpw.z, 3.0, 1.35, 0.1, 0.55 + d * 0.008, 0.6 * far); }
-  }
 }
+function ghostDetail(gh, cam) { const g = gh.built.group, dx = g.position.x - cam.x, dz = g.position.z - cam.z; setDetail(gh.built.parts, dx * dx + dz * dz); if (gh.built.trailer) setDetail(gh.built.trailer.parts, dx * dx + dz * dz); }
 function updateVehicleFx() {
   blobN = 0; lampN = 0;
   const cam = camera.position;
@@ -2251,8 +2271,8 @@ function updateVehicleFx() {
     addBlob(v.group, v.t);
     lampsOf(v.group, v.inner, v.parts, v, cam);
   }
-  for (const gh of ghostsIn.values()) { const t = TYPES[gh.type]; if (!t) continue; addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
-  for (const gh of ghostsOut) { const t = TYPES[gh.type]; if (!t) continue; addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
+  for (const gh of ghostsIn.values()) { const t = TYPES[gh.type]; if (!t) continue; ghostDetail(gh, cam); addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
+  for (const gh of ghostsOut) { const t = TYPES[gh.type]; if (!t) continue; ghostDetail(gh, cam); addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
   if (player.veh && player.mesh && state !== 'ready') lampsOf(player.mesh, player.veh.inner, player.veh.parts, player.veh, cam);
   blobMesh.count = blobN; blobMesh.instanceMatrix.needsUpdate = true;
   for (let i = lampN; i < Math.min(900, lampN + 4); i++) lampPool.alpha[i] = 0;
@@ -3296,8 +3316,9 @@ function applyHit(h) {
   const big = v.t.L > 8;
   const depth = Math.min(big ? 1.35 : 1.05, 0.1 + h.vel * 0.052 * Math.sqrt(massFactor)) * (zone === 'roof' ? 1.4 : 1);
   const radius = (big ? 1.6 : 1.05) + Math.min(1.2, h.vel * 0.04);
-  dent(v, h.point, h.dirIn, depth, radius);
-  if (h.vel > 3) scrapePaint(v, h.point, 0.25 + Math.min(0.35, h.vel * 0.02), Math.min(2.2, 0.5 + h.vel * 0.07));
+  if (v.dentT !== runTime) { v.dentT = runTime; v.dentN = 0; }
+  if (h.vel > 3 && v.dentN++ < 2) dent(v, h.point, h.dirIn, depth, radius);
+  if (h.vel > 3 && v.dentN <= 2) scrapePaint(v, h.point, 0.25 + Math.min(0.35, h.vel * 0.02), Math.min(2.2, 0.5 + h.vel * 0.07));
   v.zone[zone] += add * 1.7;
   zoneEffects(v, zone, h);
   // Debris and sparks
@@ -4714,7 +4735,29 @@ function snapPrev() {
   if (player.body) { const b = player.body; player.prev = [b.position.x, b.position.y, b.position.z, player.yaw]; player.prevQ = [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w]; }
 }
 const CULL_D2 = 430 * 430; // beyond this the haze has swallowed them: don't draw them
+// Small fittings (handles, slats, lamps, plates, mirrors) and cabin interiors cost a draw call each in every render
+// pass; past ~110 m they're a few pixels, so hide them
+const DETAIL_NEAR2 = 100 * 100, DETAIL_FAR2 = 120 * 120;
+function detailList(parts, inner) {
+  if (parts.detail) return parts.detail;
+  const L = parts.detail = [];
+  inner.traverse((o) => {
+    if (!o.isMesh || o.userData.off) return;
+    if (o.userData.detail) { L.push(o); return; }
+    if (!o.userData.rigid || parts.bumpF === o || parts.bumpR === o) return;
+    if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+    if (o.geometry.boundingSphere.radius < 0.35) { L.push(o); o.castShadow = false; }
+  });
+  return L;
+}
+function setDetail(parts, d2) {
+  const want = parts.lodNear ? d2 < DETAIL_FAR2 : d2 < DETAIL_NEAR2;
+  if (want === parts.lodNear) return;
+  parts.lodNear = want;
+  for (const o of parts.detailRef || []) if (!o.userData.off) o.visible = want;
+}
 function syncMeshes(a = 1) {
+  flushNormals();
   const cx = camera.position.x, cz = camera.position.z;
   for (const v of vehicles) {
     if (v.state === 'gone') continue;
@@ -4724,8 +4767,9 @@ function syncMeshes(a = 1) {
       _sq.set(P[3], P[4], P[5], P[6]); _sq2.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
       g.quaternion.slerpQuaternions(_sq, _sq2, a);
     } else { g.position.copy(b.position); g.quaternion.copy(b.quaternion); }
-    const dx = g.position.x - cx, dz = g.position.z - cz;
-    g.visible = dx * dx + dz * dz < CULL_D2;
+    const dx = g.position.x - cx, dz = g.position.z - cz, d2 = dx * dx + dz * dz;
+    g.visible = d2 < CULL_D2;
+    setDetail(v.parts, d2);
   }
   for (const gh of ghostsIn.values()) cullGhost(gh, cx, cz);
   for (const gh of ghostsOut) cullGhost(gh, cx, cz);
