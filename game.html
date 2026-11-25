@@ -1439,6 +1439,7 @@ playerGlassMat.userData.base = new THREE.Color('#6f8494');
 // glass on traffic cars: tinted and reflective, but see-through so the seats, dash and driver show behind it
 const carGlassMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.02, envMapIntensity: 1.7, clearcoat: 1, clearcoatRoughness: 0, specularIntensity: 1, transparent: true, opacity: 0.55, depthWrite: false });
 carGlassMat.userData.base = new THREE.Color('#2a3943');
+const busGlassMat = carGlassMat.clone(); busGlassMat.opacity = 0.9; busGlassMat.userData.base = new THREE.Color('#1d2a33');
 const interiorMat = new THREE.MeshStandardMaterial({ color: '#ffffff', vertexColors: true, roughness: 0.85, metalness: 0 });
 const SKIN = ['#e0ac84', '#c68a63', '#8d5a3b', '#f0c9a6', '#6b4328'], HAIR = ['#1c1410', '#3a2a1c', '#6a5a48', '#b0a090', '#0c0c0c'], SHIRT = ['#3a4a6a', '#7a2a2a', '#d8d6cf', '#2f5a3a', '#4a4a4e', '#9a8a4a', '#1c2a3c'];
 // One merged mesh per car (a single draw call): dash, steering wheel, seats, headrests, a parcel shelf, and usually a driver and sometimes a passenger
@@ -1508,7 +1509,7 @@ const DIRT_COL = new THREE.Color(0.27, 0.2, 0.13);
 function registerDeform(parts, g, mat, x, y, z, parent) {
   const n = g.attributes.position.count, base = mat.userData.base || new THREE.Color(1, 1, 1);
   const ca = new Float32Array(n * 3);
-  const dirty = BUILD.dirt > 0 && mat !== glassDeformMat && mat !== playerGlassMat && mat !== carGlassMat && mat.userData.base;
+  const dirty = BUILD.dirt > 0 && mat !== glassDeformMat && mat !== playerGlassMat && mat !== carGlassMat && mat !== busGlassMat && mat.userData.base;
   const pa = g.attributes.position;
   for (let i = 0; i < n; i++) {
     let r = base.r, gg = base.g, b = base.b;
@@ -1598,6 +1599,7 @@ function makeWheel(parts, inner, x, y, z, r, wid, front, dual = false) {
   pivot.userData.r = r;
   parts.wheels.push({ mesh: pivot, spin, side: Math.sign(x), z, r, front });
 }
+const pillarMat = new THREE.MeshStandardMaterial({ color: '#0d0e10', roughness: 0.55, metalness: 0, envMapIntensity: 0.15 });
 const headLensMat = new THREE.MeshPhysicalMaterial({ color: '#e4eaee', roughness: 0.04, metalness: 0, clearcoat: 1, clearcoatRoughness: 0, emissive: '#fff0d2', emissiveIntensity: 0.55, envMapIntensity: 2.4 });
 const headHousingMat = new THREE.MeshPhysicalMaterial({ color: '#16171a', metalness: 0.85, roughness: 0.22, clearcoat: 1 });
 function lamps(parts, inner, frontZ, rearZ, yF, yR, spreadF, spreadR, size = [0.4, 0.13]) {
@@ -1639,9 +1641,9 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   parts.plastic = true;
   // pillars in body colour
   const c = P.cab, hw = (k) => W / 2 * (c.wb + (c.wt - c.wb) * k) + 0.012;
-  const pm = solidPaint('#0e0f11', 0.3, 0.12);
+  const pm = isPlayer ? solidPaint('#0e0f11', 0.3, 0.12) : pillarMat;
   // your car: slim gloss-black pillars set into the glass line and running down into the body, like the real thing
-  const pIn = isPlayer ? 0.03 : 0, pS = isPlayer ? 0.6 : 1, pB = isPlayer ? -0.06 : 0;
+  const pIn = isPlayer ? 0.03 : 0.02, pS = isPlayer ? 0.6 : 0.55, pB = isPlayer ? -0.06 : 0;
   for (const s of [-1, 1]) {
     const tIn = isPlayer ? 0 : 0.055, tY = isPlayer ? 0.03 : 0.04; // on traffic cars the pillar tops tuck inside the rounded roof edge
     strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zf0), new THREE.Vector3(s * (hw(1) - pIn - tIn), B + c.roof - tY, c.zf1), 0.08 * pS, pm);
@@ -1803,9 +1805,9 @@ function buildTruck(type, colour, t, parts, inner) {
     parts.busSeats = { z0: bz - bodyL / 2 + 1.0, z1: bz + bodyL / 2 - 1.2, B, W, wheelZ: L / 2 - noseL - 0.4 };
     registerDeform(parts, lowerBody(noseL + 0.4, W * 0.9, [[1, 0.9], [0.8, 1.3], [0.3, 1.42], [-1, 1.45]], 0.5, [-0.3], 0.5), yellow, 0, B, L / 2 - noseL / 2 + 0.1, inner);
     // window band and pillars, black rub rails
-    parts.glass.push(registerDeform(parts, roundedDense(W + 0.03, 0.78, bodyL - 1.0, 0.04, 0.4), glassDeformMat, 0, B + 2.2, bz - 0.2, inner));
-    parts.glass.push(registerDeform(parts, roundedDense(W - 0.3, 0.9, 0.06, 0.03, 0.3), glassDeformMat, 0, B + 2.1, L / 2 - noseL + 0.02, inner));
-    for (let z = bz - bodyL / 2 + 0.8; z < bz + bodyL / 2 - 0.9; z += 0.86) for (const s of [-1, 1]) part(inner, new THREE.BoxGeometry(0.04, 0.8, 0.09), solidPaint('#e8a000', 0.05, 0.38), s * (W / 2 + 0.02), B + 2.2, z);
+    parts.glass.push(registerDeform(parts, roundedDense(W + 0.07, 0.78, bodyL - 1.0, 0.04, 0.14), busGlassMat, 0, B + 2.2, bz - 0.2, inner));
+    parts.glass.push(registerDeform(parts, roundedDense(W - 0.3, 0.9, 0.06, 0.03, 0.3), busGlassMat, 0, B + 2.1, L / 2 - noseL + 0.02, inner));
+    for (let z = bz - bodyL / 2 + 0.8; z < bz + bodyL / 2 - 0.9; z += 0.86) for (const s of [-1, 1]) part(inner, new THREE.BoxGeometry(0.09, 0.82, 0.11), solidPaint('#e8a000', 0.05, 0.38), s * (W / 2 + 0.03), B + 2.2, z);
     for (const y of [0.95, 1.35, 1.7]) registerDeform(parts, roundedDense(W + 0.05, 0.06, bodyL - 0.3, 0.02, 0.5), paintMat('#111111', 0.1, 0.5), 0, B + y, bz, inner);
     const sbTex = canvasTex(256, 48, (g) => { g.fillStyle = '#f0a400'; g.fillRect(0, 0, 256, 48); g.fillStyle = '#111'; g.font = 'bold 34px Arial'; g.textAlign = 'center'; g.fillText('SCHOOL BUS', 128, 37); }); sbTex.userData.perVehicle = true;
     part(inner, new THREE.BoxGeometry(1.4, 0.26, 0.04), new THREE.MeshStandardMaterial({ map: sbTex, roughness: 0.4 }), 0, B + H - 0.2, L / 2 - noseL + 0.03);
@@ -1818,7 +1820,7 @@ function buildTruck(type, colour, t, parts, inner) {
     return;
   }
   // Semi tractor: long-nose conventional cab with sleeper, chrome grille and stacks
-  const paint = paintMat(colour, 0.6, 0.28);
+  const paint = paintMat(colour, 0.3, 0.3);
   const hoodL = 2.5, cabL = 2.0, sleepL = 1.6, tz = L / 2;
   registerDeform(parts, lowerBody(hoodL + 0.2, W * 0.86, [[1, 1.15], [0.9, 1.6], [0.5, 1.82], [-1, 1.92]], 0.75, [hoodL / 2 - 0.9], 0.52), paint, 0, B, tz - hoodL / 2, inner);
   registerDeform(parts, roundedDense(W, 2.0, cabL, 0.14, 0.32), paint, 0, B + 2.2, tz - hoodL - cabL / 2, inner).userData.band = [B + 2.2, B + 3.05, true];
@@ -1867,7 +1869,7 @@ function buildVehicle(type, colour, isPlayer = false) {
   const t = isPlayer ? PT : TYPES[type];
   const mk = () => { const outer = new THREE.Group(), inner = new THREE.Group(); inner.position.y = 0; outer.add(inner); return { outer, inner, parts: { deform: [], heads: [], tails: [], wheels: [], glass: [], bonnet: null, bumpF: null, bumpR: null } }; };
   const A = mk(); A.inner.position.y = t.H * COM_DROP;
-  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : (0.12 + Math.random() * 0.7) * (t.H > 2.5 ? 0.4 : 1); BUILD.variant = isPlayer || type !== 'car' ? 0 : (Math.random() * 3) | 0;
+  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : (0.12 + Math.random() * 0.7) * (t.H > 2.5 ? 0.15 : 1); BUILD.variant = isPlayer || type !== 'car' ? 0 : (Math.random() * 3) | 0;
   if (isPlayer || type === 'car' || type === 'pickup') buildCar(isPlayer ? 'car' : type, colour, isPlayer, t, A.parts, A.inner);
   else buildTruck(type, colour, t, A.parts, A.inner);
   scene.add(A.outer);
