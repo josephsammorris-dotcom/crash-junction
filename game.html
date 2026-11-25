@@ -1417,16 +1417,18 @@ function enhancePaint(m) {
   m.customProgramCacheKey = () => 'peel';
   return m;
 }
-function paintMat(colour, metal = 0.55, rough = 0.34) {
+// Car paint is lacquer over pigment, not bare metal: low metalness keeps the colour rich, the clearcoat gives the deep gloss. Only the greys and silvers carry metallic flake.
+function paintMetal(colour) { const c = new THREE.Color(colour); return Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b) < 0.05 ? 0.55 : 0.12; }
+function paintMat(colour, metal = paintMetal(colour), rough = 0.3) {
   const key = colour + metal + rough;
   if (paintCache.has(key)) return paintCache.get(key);
-  const m = enhancePaint(new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.07, envMapIntensity: 1.1 }));
+  const m = enhancePaint(new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 1.45 }));
   m.userData.base = new THREE.Color(colour); paintCache.set(key, m); return m;
 }
 const solidCache = new Map();
-function solidPaint(colour, metal = 0.55, rough = 0.34) {
+function solidPaint(colour, metal = paintMetal(colour), rough = 0.3) {
   const key = colour + metal + rough;
-  if (!solidCache.has(key)) solidCache.set(key, enhancePaint(new THREE.MeshPhysicalMaterial({ color: colour, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.07 })));
+  if (!solidCache.has(key)) solidCache.set(key, enhancePaint(new THREE.MeshPhysicalMaterial({ color: colour, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 1.45 })));
   return solidCache.get(key);
 }
 const glassDeformMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.03, envMapIntensity: 1.8, clearcoat: 1, clearcoatRoughness: 0 });
@@ -1434,6 +1436,40 @@ glassDeformMat.userData.base = new THREE.Color('#0b1015');
 // your car's glass: see-through, lightly tinted, with strong sky reflections, so the cabin shows
 const playerGlassMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.02, envMapIntensity: 1.5, clearcoat: 1, clearcoatRoughness: 0, specularIntensity: 0.8, transparent: true, opacity: 0.26, depthWrite: false });
 playerGlassMat.userData.base = new THREE.Color('#6f8494');
+// glass on traffic cars: tinted and reflective, but see-through so the seats, dash and driver show behind it
+const carGlassMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.02, envMapIntensity: 1.7, clearcoat: 1, clearcoatRoughness: 0, specularIntensity: 1, transparent: true, opacity: 0.55, depthWrite: false });
+carGlassMat.userData.base = new THREE.Color('#2a3943');
+const interiorMat = new THREE.MeshStandardMaterial({ color: '#ffffff', vertexColors: true, roughness: 0.85, metalness: 0 });
+const SKIN = ['#e0ac84', '#c68a63', '#8d5a3b', '#f0c9a6', '#6b4328'], HAIR = ['#1c1410', '#3a2a1c', '#6a5a48', '#b0a090', '#0c0c0c'], SHIRT = ['#3a4a6a', '#7a2a2a', '#d8d6cf', '#2f5a3a', '#4a4a4e', '#9a8a4a', '#1c2a3c'];
+// One merged mesh per car (a single draw call): dash, steering wheel, seats, headrests, a parcel shelf, and usually a driver and sometimes a passenger
+function carInterior(inner, B, cab, W, pickup) {
+  const geos = [], tmp = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), pk = (a) => a[(Math.random() * a.length) | 0];
+  const add = (g, x, y, z, col, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => {
+    q.setFromEuler(e.set(rx, ry, rz)); g.applyMatrix4(tmp.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(sx, sy, sz)));
+    const c = new THREE.Color(col), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3)); geos.push(g);
+  };
+  const yb = B + cab.belt, cw = W / 2 * cab.wb - 0.08, fab = '#202125', dash = '#131416';
+  const k = Math.min(1, (cab.roof - cab.belt - 0.04) / 0.62); // the glasshouse is only ~0.5 m tall: everything is scaled to sit inside it
+  const sbz = pickup ? -0.12 : -0.42;
+  add(new THREE.BoxGeometry(cw * 2, 0.1 * k, 0.3), 0, yb + 0.05 * k, cab.zf0 - 0.26, dash);
+  add(new THREE.BoxGeometry(cw * 2 - 0.1, 0.05 * k, 0.14), 0, yb + 0.12 * k, cab.zf0 - 0.36, dash);
+  add(new THREE.TorusGeometry(0.15, 0.018, 6, 16), 0.38, yb + 0.2 * k, cab.zf0 - 0.52, '#0e0e10', -1.0);
+  for (const sx of [-1, 1]) {
+    add(new THREE.BoxGeometry(0.46, 0.1 * k, 0.5), sx * 0.38, yb + 0.05 * k, sbz + 0.28, fab);
+    add(new THREE.BoxGeometry(0.44, 0.4 * k, 0.1), sx * 0.38, yb + 0.22 * k, sbz, fab, -0.12);
+    add(new THREE.BoxGeometry(0.2, 0.12 * k, 0.09), sx * 0.38, yb + 0.46 * k, sbz - 0.05, fab, -0.12);
+  }
+  if (!pickup) { add(new THREE.BoxGeometry(cw * 2 - 0.2, 0.26 * k, 0.12), 0, yb + 0.14 * k, -1.02, fab, -0.25); add(new THREE.BoxGeometry(cw * 2 - 0.2, 0.02, 0.3), 0, yb + 0.02, cab.zr0 + 0.22, dash); }
+  const person = (x) => {
+    add(new THREE.BoxGeometry(0.34, 0.26 * k, 0.18), x, yb + 0.27 * k, sbz + 0.06, pk(SHIRT));
+    add(new THREE.SphereGeometry(0.1 * k + 0.012, 10, 8), x, yb + 0.5 * k, sbz + 0.05, pk(SKIN));
+    add(new THREE.SphereGeometry(0.106 * k + 0.012, 10, 8), x, yb + 0.53 * k, sbz + 0.02, pk(HAIR), 0, 0, 0, 1, 0.85, 1);
+  };
+  if (Math.random() < 0.9) person(0.38);
+  if (Math.random() < 0.4) person(-0.38);
+  const m = new THREE.Mesh(BGU.mergeGeometries(geos), interiorMat); m.userData.melts = true; inner.add(m); return m;
+}
 const crackTex = canvasTex(256, 256, (g, w, h) => {
   g.fillStyle = '#5b6670'; g.fillRect(0, 0, w, h);
   g.strokeStyle = 'rgba(235,240,245,0.9)'; g.lineWidth = 1.2;
@@ -1472,7 +1508,7 @@ const DIRT_COL = new THREE.Color(0.27, 0.2, 0.13);
 function registerDeform(parts, g, mat, x, y, z, parent) {
   const n = g.attributes.position.count, base = mat.userData.base || new THREE.Color(1, 1, 1);
   const ca = new Float32Array(n * 3);
-  const dirty = BUILD.dirt > 0 && mat !== glassDeformMat && mat !== playerGlassMat && mat.userData.base;
+  const dirty = BUILD.dirt > 0 && mat !== glassDeformMat && mat !== playerGlassMat && mat !== carGlassMat && mat.userData.base;
   const pa = g.attributes.position;
   for (let i = 0; i < n; i++) {
     let r = base.r, gg = base.g, b = base.b;
@@ -1562,11 +1598,15 @@ function makeWheel(parts, inner, x, y, z, r, wid, front, dual = false) {
   pivot.userData.r = r;
   parts.wheels.push({ mesh: pivot, spin, side: Math.sign(x), z, r, front });
 }
+const headLensMat = new THREE.MeshPhysicalMaterial({ color: '#e4eaee', roughness: 0.04, metalness: 0, clearcoat: 1, clearcoatRoughness: 0, emissive: '#fff0d2', emissiveIntensity: 0.55, envMapIntensity: 2.4 });
+const headHousingMat = new THREE.MeshPhysicalMaterial({ color: '#16171a', metalness: 0.85, roughness: 0.22, clearcoat: 1 });
 function lamps(parts, inner, frontZ, rearZ, yF, yR, spreadF, spreadR, size = [0.4, 0.13]) {
   const tailMat = new THREE.MeshStandardMaterial({ color: '#2a0504', emissive: '#ff1a0a', emissiveIntensity: TAIL_DIM, roughness: 0.15 });
   parts.tailMat = tailMat;
   for (const sx of [-1, 1]) {
-    const hl = new THREE.Mesh(new RoundedBoxGeometry(size[0], size[1], 0.08, 2, 0.03), headMat); hl.position.set(sx * spreadF, yF, frontZ); inner.add(hl); parts.heads.push(hl);
+    const hl = new THREE.Mesh(new RoundedBoxGeometry(size[0], size[1], 0.08, 2, 0.03), headLensMat); hl.position.set(sx * spreadF, yF, frontZ + 0.015); inner.add(hl); parts.heads.push(hl);
+    const hs = new THREE.Mesh(new RoundedBoxGeometry(size[0] + 0.06, size[1] + 0.06, 0.07, 2, 0.025), headHousingMat); hs.position.set(sx * spreadF, yF, frontZ - 0.01); inner.add(hs);
+    const rf = new THREE.Mesh(new THREE.CylinderGeometry(size[1] * 0.3, size[1] * 0.3, 0.02, 12), chrome); rf.rotation.x = Math.PI / 2; rf.position.set(sx * spreadF - sx * size[0] * 0.12, yF, frontZ - 0.012); inner.add(rf);
     const tl = new THREE.Mesh(new RoundedBoxGeometry(size[0] * 0.95, size[1] * 1.1, 0.08, 2, 0.03), tailMat); tl.position.set(sx * spreadR, yR, rearZ); inner.add(tl); parts.tails.push(tl);
   }
 }
@@ -1589,8 +1629,9 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   const paint = paintMat(colour);
   const hull = registerDeform(parts, lowerBody(L, W, P.top, P.bottom, P.axles, P.r), paint, 0, B, 0, inner);
   parts.hull = hull;
-  const glassMesh = registerDeform(parts, cabinGeo(W, P.cab), isPlayer ? playerGlassMat : glassDeformMat, 0, B, 0, inner);
-  parts.glass.push(glassMesh); if (isPlayer) glassMesh.renderOrder = 3;
+  const glassMesh = registerDeform(parts, cabinGeo(W, P.cab), isPlayer ? playerGlassMat : carGlassMat, 0, B, 0, inner);
+  parts.glass.push(glassMesh); glassMesh.renderOrder = 3;
+  if (!isPlayer) carInterior(inner, B, P.cab, W, type === 'pickup');
   const roofM = registerDeform(parts, cabinGeo(W, P.cab, 0, isPlayer ? 0.075 : 0.05), isPlayer ? paintMat('#16181c') : paint, 0, B, 0, inner);
   roofM.userData.roof = true;
   if (isPlayer) { roofM.scale.set(1.07, 1, 1.07); roofM.position.z += 0.035; roofM.position.y -= 0.012; } // a slightly larger roof that caps the tops of the pillars
@@ -1598,14 +1639,16 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   parts.plastic = true;
   // pillars in body colour
   const c = P.cab, hw = (k) => W / 2 * (c.wb + (c.wt - c.wb) * k) + 0.012;
-  const pm = isPlayer ? solidPaint('#0e0f11', 0.3, 0.12) : solidPaint(colour);
+  const pm = solidPaint('#0e0f11', 0.3, 0.12);
   // your car: slim gloss-black pillars set into the glass line and running down into the body, like the real thing
   const pIn = isPlayer ? 0.03 : 0, pS = isPlayer ? 0.6 : 1, pB = isPlayer ? -0.06 : 0;
   for (const s of [-1, 1]) {
-    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zf0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof - (isPlayer ? 0.03 : 0), c.zf1), 0.08 * pS, pm);
-    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zr0), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof - (isPlayer ? 0.03 : 0), c.zr1), 0.12 * pS, pm);
-    if (type !== 'pickup') strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, -0.32), new THREE.Vector3(s * (hw(1) - pIn), B + c.roof - (isPlayer ? 0.03 : 0), -0.3), 0.08 * pS, pm);
-    part(inner, new RoundedBoxGeometry(0.1, 0.13, 0.2, 2, 0.03), pm, s * (W / 2 + 0.06), B + c.belt + 0.08, c.zf0 - 0.12);
+    const tIn = isPlayer ? 0 : 0.055, tY = isPlayer ? 0.03 : 0.04; // on traffic cars the pillar tops tuck inside the rounded roof edge
+    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zf0), new THREE.Vector3(s * (hw(1) - pIn - tIn), B + c.roof - tY, c.zf1), 0.08 * pS, pm);
+    strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, c.zr0), new THREE.Vector3(s * (hw(1) - pIn - tIn), B + c.roof - tY, c.zr1), 0.12 * pS, pm);
+    if (type !== 'pickup') strut(inner, new THREE.Vector3(s * (hw(0) - pIn), B + c.belt + pB, -0.32), new THREE.Vector3(s * (hw(1) - pIn - tIn), B + c.roof - tY, -0.3), 0.08 * pS, pm);
+    const wm = part(inner, new RoundedBoxGeometry(0.1, 0.13, 0.2, 2, 0.03), isPlayer ? pm : solidPaint(colour), s * (W / 2 + 0.06), B + c.belt + 0.08, c.zf0 - 0.12);
+    if (!isPlayer) (parts.mirrors ||= {})[s > 0 ? 'left' : 'right'] = wm;
   }
   // hood that can buckle open
   const hz0 = P.top[4][0] * L / 2, hz1 = P.top[3][0] * L / 2;
@@ -1623,7 +1666,7 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
       const ends = THREE.MathUtils.smoothstep(Math.abs(wn), 0.72, 1), plan = 1 - 0.13 * ends * ends, tuck = 1 - 0.06 * (1 - hh) ** 2, shoulder = hh > 0.78 ? 1 - 0.11 * ((hh - 0.78) / 0.22) ** 2 : 1;
       return { y, x: W / 2 * plan * tuck * shoulder };
     };
-    parts.doors = {}; parts.mirrors = {};
+    parts.doors = {};
     for (const sd of [1, -1]) {
       const hg = shell(dz1, 0.5), zone = sd > 0 ? 'left' : 'right';
       const dp = new THREE.Group(); dp.position.set(sd * hg.x, B + hg.y, dz1); inner.add(dp);
@@ -1641,8 +1684,6 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
       dm.userData.orig = pa.array.slice(); dm.userData.door = true;
       const hd = new THREE.Mesh(doorHandleGeo, trimMat); hd.position.set(sd * 0.026, 0.1, dz0 - dz1 + 0.2); hd.castShadow = false; dm.add(hd);
       parts.doors[zone] = { pivot: dp, mesh: dm, side: sd, z0: dz0, z1: dz1, y0: shell(dz0, 0).y - 0.04, y1: shell(dz1, 1).y + 0.03 };
-      const mr = part(inner, mirrorGeo, solidPaint(colour), sd * (W / 2 + 0.07), B + shell(dz1, 1).y + 0.09, dz1 - 0.12); mr.rotation.y = -sd * 0.25;
-      parts.mirrors[zone] = mr;
     }
     if (type !== 'pickup' && variant !== 1) {
       const bz0 = P.cab.zr0 - 0.05, bz1 = P.top[8][0] * L / 2, bp = new THREE.Group(); bp.position.set(0, B + lerpT(P.top, bz0 / (L / 2)) + 0.004, bz0); inner.add(bp);
@@ -1826,7 +1867,7 @@ function buildVehicle(type, colour, isPlayer = false) {
   const t = isPlayer ? PT : TYPES[type];
   const mk = () => { const outer = new THREE.Group(), inner = new THREE.Group(); inner.position.y = 0; outer.add(inner); return { outer, inner, parts: { deform: [], heads: [], tails: [], wheels: [], glass: [], bonnet: null, bumpF: null, bumpR: null } }; };
   const A = mk(); A.inner.position.y = t.H * COM_DROP;
-  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : 0.12 + Math.random() * 0.7; BUILD.variant = isPlayer || type !== 'car' ? 0 : (Math.random() * 3) | 0;
+  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : (0.12 + Math.random() * 0.7) * (t.H > 2.5 ? 0.4 : 1); BUILD.variant = isPlayer || type !== 'car' ? 0 : (Math.random() * 3) | 0;
   if (isPlayer || type === 'car' || type === 'pickup') buildCar(isPlayer ? 'car' : type, colour, isPlayer, t, A.parts, A.inner);
   else buildTruck(type, colour, t, A.parts, A.inner);
   scene.add(A.outer);
@@ -2130,10 +2171,7 @@ function lampsOf(g, inner, parts, v, cam) {
   const dead = v && (v.burnt || v.flags && v.flags.heads);
   const iy = inner ? inner.position.y : 0;
   const sz = 0.55 + d * 0.013;
-  if (fc > 0.1 && !dead && parts.heads[0] && parts.heads[0].visible) {
-    const k = THREE.MathUtils.smoothstep(fc, 0.1, 0.85) * far;
-    for (const h of parts.heads) { _lw.copy(h.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 2.4, 2.1, 1.6, sz, 0.55 * k); }
-  } else if (fc < -0.1 && parts.tails.length && !dead) {
+  if (fc < -0.1 && parts.tails.length && !dead) {
     const braking = v ? (v.braking || (v.panic && v.panic.brake) || v.state === 'loose') : false;
     const k = THREE.MathUtils.smoothstep(-fc, 0.1, 0.8) * far;
     if (braking || v === player.veh) for (const t of parts.tails) { _lw.copy(t.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 3.2, 0.25, 0.12, sz * 0.8, 0.5 * k * (braking ? 1 : 0.3)); }
