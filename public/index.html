@@ -511,7 +511,7 @@ const CFG = {
   duration: 60, approachMax: 120, boostTime: 10, boostRegen: 35, light0: 16,
   cruise: 34, boost: 58, accel: 10, boostAccel: 20, brakeDecel: 24, minSpeed: 4,
   steerRate: 1.15,
-  damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 1.2, blur: true, rumble: true, warm: 40,
+  damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 1.2, blur: true, dof: true, rumble: true, warm: 40,
 };
 const MEDALS = { bronze: 2500000, silver: 5000000, gold: 9000000 };
 const fmt = (n) => '$' + Math.round(n).toLocaleString('en-US');
@@ -641,6 +641,14 @@ scene.add(sky);
   envScene.add(s2);
   const ground = new THREE.Mesh(new THREE.CircleGeometry(900, 32), new THREE.MeshBasicMaterial({ color: '#8f7458' }));
   ground.rotation.x = -Math.PI / 2; ground.position.y = -2; envScene.add(ground);
+  // a bright sun and a ring of dark mesas on the horizon, so reflections in paint and glass have a hotspot and a skyline
+  const sunDisc = new THREE.Mesh(new THREE.SphereGeometry(26, 16, 12), new THREE.MeshBasicMaterial({ color: new THREE.Color(90, 62, 34) }));
+  sunDisc.position.copy(SUN_DIR).multiplyScalar(820); envScene.add(sunDisc);
+  const mesaMat = new THREE.MeshBasicMaterial({ color: '#5a3f2c' }), er = rng(31);
+  for (let i = 0; i < 18; i++) {
+    const a = (i / 18) * Math.PI * 2 + er() * 0.3, w = 60 + er() * 140, h = 18 + er() * 55, r = 760 + er() * 120;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 40 + er() * 50), mesaMat); m.position.set(Math.cos(a) * r, h / 2 - 2, Math.sin(a) * r); m.rotation.y = -a; envScene.add(m);
+  }
   scene.environment = pm.fromScene(envScene, 0.02).texture;
   pm.dispose();
 }
@@ -671,6 +679,28 @@ const noAO = [];
 const bloom = new UnrealBloomPass(new THREE.Vector2(16, 16), 0.28, 0.4, 7.0);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
+// Depth of field, for replays only: blurs by distance from whatever the camera is following (reads the AO pass's depth buffer)
+const dofPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, tDepth: { value: null }, uFocus: { value: 20 }, uAmt: { value: 0 }, uNear: { value: 0.3 }, uFar: { value: 5000 }, uAspect: { value: 1 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse, tDepth; uniform float uFocus, uAmt, uNear, uFar, uAspect; varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      float d = texture2D(tDepth, vUv).x;
+      float dist = uNear * uFar / (uFar - (uFar - uNear) * d);
+      float coc = clamp(abs(dist - uFocus) / max(uFocus, 4.0) * 0.5, 0.0, 1.0) * uAmt;
+      if (coc < 0.03) { gl_FragColor = c; return; }
+      float rad = coc * 0.011; vec3 acc = c.rgb; float tot = 1.0;
+      for (int i = 1; i < 22; i++) {
+        float fi = float(i), a = fi * 2.39996, r = sqrt(fi / 22.0) * rad;
+        vec2 o = vec2(cos(a) / uAspect, sin(a)) * r;
+        acc += texture2D(tDiffuse, vUv + o).rgb; tot += 1.0;
+      }
+      gl_FragColor = vec4(acc / tot, c.a);
+    }`,
+});
+dofPass.enabled = false;
+composer.addPass(dofPass);
 // Speed blur: a radial zoom blur toward a point, used at top speed and as a jolt on big impacts
 const blurPass = new ShaderPass({
   uniforms: { tDiffuse: { value: null }, uCenter: { value: new THREE.Vector2(0.5, 0.5) }, uAmt: { value: 0 } },
@@ -691,6 +721,7 @@ function blurPulse(p, amt) {
   if (runTime - (blurState.last ?? -9) < 1.2 && amt < 0.2) return; // no constant smearing in pile-ups
   blurState.last = runTime;
   blurState.pulse = Math.max(blurState.pulse, amt);
+  fxState.ca = Math.max(fxState.ca, Math.min(0.0035, amt * 0.018));
 }
 function updateBlur(dt) {
   blurState.pulse *= Math.exp(-dt * 4.5);
@@ -710,6 +741,76 @@ function updateBlur(dt) {
   if (!CFG.blur) amt = 0;
   blurPass.enabled = amt > 0.003;
   blurPass.uniforms.uAmt.value = amt; blurPass.uniforms.uCenter.value.set(cx, cy);
+}
+// Lens and air: heat shimmer above the far road, a trace of colour fringing (kicked up by impacts), and the low sun's flare and light shafts
+const fxPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uHz: { value: 0.5 }, uShim: { value: 1 }, uCA: { value: 0 }, uAspect: { value: 1 }, uSun: { value: new THREE.Vector2(0.5, 0.5) }, uOn: { value: 0 }, uFlare: { value: 1 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uHz, uShim, uCA, uAspect, uOn, uFlare; uniform vec2 uSun; varying vec2 vUv;
+    float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
+    void main(){
+      vec2 uv = vUv, asp = vec2(uAspect, 1.0);
+      float below = uHz - uv.y;
+      float band = smoothstep(-0.004, 0.01, below) * (1.0 - smoothstep(0.015, 0.13, below));
+      uv.x += sin(uv.y * 240.0 + uTime * 2.6 + sin(uv.x * 9.0 + uTime) * 2.0) * 0.0011 * band * uShim;
+      uv.y += sin(uv.x * 85.0 - uTime * 1.7) * 0.0004 * band * uShim;
+      vec2 d = uv - 0.5; float ca = uCA * (dot(d, d) * 4.0 + 0.15) + 0.0004 * dot(d, d) * 4.0;
+      vec3 c = vec3(texture2D(tDiffuse, uv + d * ca).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - d * ca).b);
+      if (uOn > 0.5 && uFlare > 0.0) {
+        vec2 sp = uSun; float vis = 0.0;
+        for (int i = 0; i < 9; i++) {
+          float a = float(i) * 0.698; vec2 p = sp + (i == 0 ? vec2(0.0) : vec2(cos(a), sin(a)) * 0.011) / asp;
+          if (p.x > 0.0 && p.x < 1.0 && p.y > 0.0 && p.y < 1.0) vis += step(0.82, lum(texture2D(tDiffuse, p).rgb));
+        }
+        vis /= 9.0;
+        if (vis > 0.0) {
+          vec2 dd = (uv - sp) * asp; float dist = length(dd);
+          // light shafts: bright sky seen along the line towards the sun
+          vec2 stp = (sp - uv) * 0.9 / 18.0; vec2 p = uv; float acc = 0.0, w = 1.0;
+          for (int i = 0; i < 18; i++) { p += stp; acc += smoothstep(0.78, 1.0, lum(texture2D(tDiffuse, p).rgb)) * w; w *= 0.93; }
+          vec3 add = vec3(1.0, 0.78, 0.5) * acc * 0.0105 * (1.0 - smoothstep(0.1, 1.1, dist));
+          // halo, anamorphic streak and ghosts along the line through the screen centre
+          add += vec3(1.0, 0.8, 0.55) * exp(-pow((dist - 0.17) / 0.014, 2.0)) * 0.05;
+          add += vec3(1.0, 0.85, 0.6) * exp(-abs(dd.y) * 42.0) * exp(-abs(dd.x) * 2.2) * 0.07;
+          vec2 toC = vec2(0.5) - sp;
+          for (int k = 0; k < 4; k++) {
+            float t = k == 0 ? 0.45 : k == 1 ? 0.9 : k == 2 ? 1.35 : 1.9, r = k == 0 ? 0.035 : k == 1 ? 0.07 : k == 2 ? 0.028 : 0.055;
+            float g = smoothstep(r, r * 0.45, length((uv - (sp + toC * t)) * asp));
+            vec3 tint = k == 0 ? vec3(0.4, 0.7, 1.0) : k == 1 ? vec3(1.0, 0.6, 0.3) : k == 2 ? vec3(0.5, 1.0, 0.6) : vec3(1.0, 0.5, 0.7);
+            add += tint * g * 0.045;
+          }
+          float edge = 1.0 - smoothstep(0.55, 1.0, length((sp - 0.5) * asp));
+          c += add * vis * edge * uFlare;
+        }
+      }
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+});
+composer.addPass(fxPass);
+const fxState = { ca: 0, focus: 20, dof: 0 };
+const _fxv = new THREE.Vector3(), _fxd = new THREE.Vector3();
+function updateFx(dt) {
+  fxState.ca *= Math.exp(-dt * 7);
+  fxPass.uniforms.uTime.value = realClock % 1000; fxPass.uniforms.uCA.value = fxState.ca;
+  fxPass.uniforms.uAspect.value = camera.aspect;
+  // the sun on screen?
+  _fxv.copy(camera.position).addScaledVector(SUN_DIR, 1000).project(camera);
+  fxPass.uniforms.uOn.value = _fxv.z < 1 ? 1 : 0;
+  fxPass.uniforms.uSun.value.set(_fxv.x * 0.5 + 0.5, _fxv.y * 0.5 + 0.5);
+  // the horizon line, for the heat shimmer
+  camera.getWorldDirection(_fxd); _fxd.y = 0; if (_fxd.lengthSq() < 1e-4) _fxd.set(0, 0, 1); _fxd.normalize();
+  _fxv.copy(camera.position).addScaledVector(_fxd, 4000); _fxv.y = 0; _fxv.project(camera);
+  fxPass.uniforms.uHz.value = _fxv.y * 0.5 + 0.5;
+  // depth of field in replays
+  const u = replay.on ? (replay.mode === 'track' || replay.mode === 'chase' ? player.veh : replay.shot && replay.shot.u) : null;
+  const want = u && u.body && u.state !== 'gone' && gtao.enabled && CFG.dof ? 1 : 0;
+  fxState.dof += (want - fxState.dof) * Math.min(1, dt * 3);
+  if (want) { const b = u.body, dd = Math.hypot(b.position.x - camera.position.x, b.position.y - camera.position.y, b.position.z - camera.position.z); fxState.focus += (Math.max(4, dd) - fxState.focus) * Math.min(1, dt * 4); }
+  dofPass.enabled = fxState.dof > 0.02;
+  if (dofPass.enabled) {
+    dofPass.uniforms.tDepth.value = gtao.depthTexture; dofPass.uniforms.uFocus.value = fxState.focus; dofPass.uniforms.uAmt.value = fxState.dof;
+    dofPass.uniforms.uAspect.value = camera.aspect; dofPass.uniforms.uNear.value = camera.near; dofPass.uniforms.uFar.value = camera.far;
+  }
 }
 const grade = new ShaderPass({
   uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVig: { value: 0.32 }, uGrain: { value: 0.028 } },
@@ -845,7 +946,21 @@ const sandNormal = normalTex(512, (u, v) => Math.sin((v + tnoise(u, v, 2, 2) * 0
 const sandMat = new THREE.MeshStandardMaterial({ map: sandMap, normalMap: sandNormal, normalScale: new THREE.Vector2(0.3, 0.3), roughness: 0.96, metalness: 0, vertexColors: true, envMapIntensity: 0.5 });
 sandMat.onBeforeCompile = (sh) => {
   // world-space UVs so the sand keeps its scale across the whole terrain
-  sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n vec4 wpS = modelMatrix * vec4(position, 1.0);\n #if defined( USE_MAP )\n vMapUv = wpS.xz / 9.0;\n #endif\n #if defined( USE_NORMALMAP )\n vNormalMapUv = wpS.xz / 6.0;\n #endif');
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vWS;').replace('#include <uv_vertex>', '#include <uv_vertex>\n vec4 wpS = modelMatrix * vec4(position, 1.0);\n vWS = wpS.xyz;\n #if defined( USE_MAP )\n vMapUv = wpS.xz / 9.0;\n #endif\n #if defined( USE_NORMALMAP )\n vNormalMapUv = wpS.xz / 6.0;\n #endif');
+  // wind ripples: long crests across the wind, bent by noise, fading out with distance (they would only shimmer)
+  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
+    varying vec3 vWS;
+    float sr_h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float sr_n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(sr_h(i), sr_h(i + vec2(1.0, 0.0)), f.x), mix(sr_h(i + vec2(0.0, 1.0)), sr_h(i + vec2(1.0, 1.0)), f.x), f.y); }`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+    {
+      float rf = 1.0 - smoothstep(18.0, 75.0, vFogDepth);
+      vec2 wq = vWS.xz;
+      float ph = dot(wq, vec2(0.6, -0.8)) * 2.6 + (sr_n(wq * 0.35) - 0.5) * 9.0 + (sr_n(wq * 1.3) - 0.5) * 1.6;
+      float cr = cos(ph) * (0.55 + 0.45 * sr_n(wq * 0.18 + 5.0));
+      vec3 tilt = (viewMatrix * vec4(cr * 0.6 * 0.09, 0.0, cr * -0.8 * 0.09, 0.0)).xyz;
+      normal = normalize(normal + tilt * rf);
+    }`);
 };
 
 // Terrain height: flat where the roads are, rolling sand further out, big dunes on the horizon, and the ridge you start on
@@ -939,6 +1054,7 @@ const SAND_GLSL = `
   }`;
 const SAND_RGB = `vec3(${SAND_COL.r.toFixed(4)}, ${SAND_COL.g.toFixed(4)}, ${SAND_COL.b.toFixed(4)})`;
 const acrExpr = (lenAxis) => lenAxis === 'x' ? 'vWp.z' : lenAxis === 'arc' ? `(${ROUTE_R.toFixed(1)} - length(vWp.xz - vec2(${(-ROUTE_R).toFixed(1)}, ${ROUTE_S2Z.toFixed(1)})))` : 'vWp.x';
+const alongFor = (lenAxis) => lenAxis === 'x' || lenAxis === 'xs' ? 'vWp.x' : lenAxis === 'z' ? 'vWp.z' : '1000.0';
 const acrFor = (lenAxis) => lenAxis === 'x' ? 'vWp.z' : lenAxis === 'xs' ? '(vWp.z - ' + ROUTE_Z.toFixed(1) + ')' : acrExpr(lenAxis);
 function roadMat(lenAxis) {
   const m = new THREE.MeshStandardMaterial({ map: asphaltMap, roughnessMap: asphaltRough, normalMap: asphaltNormal, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 1, metalness: 0, envMapIntensity: 0.6 });
@@ -947,16 +1063,39 @@ function roadMat(lenAxis) {
     // polished, darker tyre tracks in each lane
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n varying vec3 vWp;').replace('#include <map_fragment>', `#include <map_fragment>
       float acr = ${acrFor(lenAxis)};
+      float oilK = 0.0, patchK = 0.0;
       float track = 0.0;
       for (int i = 0; i < 4; i++) { float c = (i < 2 ? 1.0 : -1.0) * (${LANE.toFixed(2)} + (mod(float(i), 2.0) < 0.5 ? -0.75 : 0.75)); track += exp(-pow((acr - c) / 0.32, 2.0)); }
       diffuseColor.rgb *= 1.0 - 0.18 * track;
+      float azl = abs(${alongFor(lenAxis)});
+      // repair patches: darker fresh tar in crisp rectangles, with a sealed seam round the edge
+      vec2 pcl = vWp.xz / vec2(11.0, 7.0), pci = floor(pcl), pcf = fract(pcl);
+      vec2 pex = vec2(0.08 + 0.2 * hsh(pci + 1.3), 0.1 + 0.22 * hsh(pci + 8.1));
+      float pOn = step(0.88, hsh(pci + 3.7));
+      vec2 pdd = abs(pcf - 0.5);
+      float pIn = pOn * step(pdd.x, pex.x) * step(pdd.y, pex.y);
+      float pSeam = pOn * step(pdd.x, pex.x + 0.012) * step(pdd.y, pex.y + 0.02) * (1.0 - pIn);
+      patchK = pIn;
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.78, 0.79, 0.83), pIn);
+      diffuseColor.rgb *= 1.0 - 0.4 * pSeam;
+      // approaches to the junction: braking rubber laid in the wheel tracks and oil dripped under the engine
+      float stopZ = smoothstep(${(ROAD_HALF + 1.0).toFixed(1)}, ${(ROAD_HALF + 4.0).toFixed(1)}, azl) * (1.0 - smoothstep(${(ROAD_HALF + 16.0).toFixed(1)}, ${(ROAD_HALF + 34.0).toFixed(1)}, azl));
+      float laneC = exp(-pow((abs(acr) - ${LANE.toFixed(2)}) / 0.4, 2.0));
+      float oilN = fbz(vWp.xz * vec2(0.55, 0.55) + 11.0);
+      oilK = smoothstep(0.66 - 0.1 * stopZ, 0.74 - 0.1 * stopZ, oilN) * laneC * (1.0 - pIn);
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.5, 0.52, 0.58), oilK);
+      float rubber = stopZ * track * (0.5 + 0.5 * vnz(vWp.xz * vec2(0.9, 0.9)));
+      diffuseColor.rgb *= 1.0 - 0.28 * rubber;
+      // the shoulder crumbles and bleaches towards the edge
+      float edgeW = smoothstep(${(ROAD_HALF - 2.4).toFixed(2)}, ${(ROAD_HALF - 0.3).toFixed(2)}, abs(acr)) * (0.45 + 0.55 * vnz(vWp.xz * 3.4));
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.18, 1.12, 1.02), edgeW * 0.5);
       // where sand has blown over it the tarmac fades out, so it is the desert itself (same texture, same light) on top
       float sandAmt = sandCover(vWp.xz, abs(acr), ${(ROAD_HALF - 2.6).toFixed(2)}, ${(ROAD_HALF + 1.2).toFixed(2)}) * (1.0 - 0.6 * track);
       sandAmt = max(sandAmt, smoothstep(${(ROAD_HALF + 0.4).toFixed(2)}, ${(ROAD_HALF + 1.8).toFixed(2)}, abs(acr)));
       // where the two roads cross, both stay solid tarmac right across (no sand showing through in the junction)
       sandAmt *= smoothstep(${(ROAD_HALF + 0.5).toFixed(2)}, ${(ROAD_HALF + 7).toFixed(2)}, abs(${lenAxis === 'x' ? 'vWp.x' : lenAxis === 'z' ? 'vWp.z' : '1000.0'}));
       diffuseColor.a *= 1.0 - smoothstep(0.1, 0.7, sandAmt);
-      diffuseColor.rgb = mix(diffuseColor.rgb, ${SAND_RGB} * 0.9, smoothstep(0.0, 0.45, sandAmt) * 0.7);`).replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 1.0, sandAmt);').replace('void main() {', SAND_GLSL + '\nvoid main() {');
+      diffuseColor.rgb = mix(diffuseColor.rgb, ${SAND_RGB} * 0.9, smoothstep(0.0, 0.45, sandAmt) * 0.7);`).replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = mix(roughnessFactor, 0.26, oilK * (1.0 - sandAmt)); roughnessFactor = mix(roughnessFactor, 0.55, patchK * 0.7); roughnessFactor = mix(roughnessFactor, 1.0, sandAmt);').replace('void main() {', SAND_GLSL + '\nvoid main() {');
   };
   m.transparent = true; m.depthWrite = false; m.userData.road = true; // drawn after the opaque desert; fades into it at the edges and under drifts
   m.customProgramCacheKey = () => 'road-' + lenAxis; // each road direction compiles its own shader
@@ -1272,16 +1411,36 @@ const COM_DROP = 0.22;
 const CLEAR = 0.32; // gap between the collision box and the road at rest
 const paintCache = new Map();
 // Clearcoat paint. The colour lives in vertex colours, so a dent can scrape it to bare metal.
+// Orange peel: a fine ripple in the clearcoat's normal, so highlights break up like real lacquer. It fades out with distance (it would only shimmer).
+function enhancePaint(m) {
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vOP;').replace('#include <begin_vertex>', '#include <begin_vertex>\n vOP = position;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
+      varying vec3 vOP;
+      float pk_h(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+      float pk_n(vec3 p){ vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(pk_h(i), pk_h(i + vec3(1,0,0)), f.x), mix(pk_h(i + vec3(0,1,0)), pk_h(i + vec3(1,1,0)), f.x), f.y),
+                   mix(mix(pk_h(i + vec3(0,0,1)), pk_h(i + vec3(1,0,1)), f.x), mix(pk_h(i + vec3(0,1,1)), pk_h(i + vec3(1,1,1)), f.x), f.y), f.z); }`)
+      .replace('#include <clearcoat_normal_fragment_maps>', `#include <clearcoat_normal_fragment_maps>
+      #ifdef USE_CLEARCOAT
+        float pkFade = 1.0 - smoothstep(6.0, 26.0, length(vViewPosition));
+        vec3 pkP = vOP * 55.0;
+        clearcoatNormal = normalize(clearcoatNormal + pkFade * 0.018 * (vec3(pk_n(pkP), pk_n(pkP + 17.3), pk_n(pkP + 31.7)) - 0.5) * 2.0);
+      #endif`);
+  };
+  m.customProgramCacheKey = () => 'peel';
+  return m;
+}
 function paintMat(colour, metal = 0.55, rough = 0.34) {
   const key = colour + metal + rough;
   if (paintCache.has(key)) return paintCache.get(key);
-  const m = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.07, envMapIntensity: 1.1 });
+  const m = enhancePaint(new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.07, envMapIntensity: 1.1 }));
   m.userData.base = new THREE.Color(colour); paintCache.set(key, m); return m;
 }
 const solidCache = new Map();
 function solidPaint(colour, metal = 0.55, rough = 0.34) {
   const key = colour + metal + rough;
-  if (!solidCache.has(key)) solidCache.set(key, new THREE.MeshPhysicalMaterial({ color: colour, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.07 }));
+  if (!solidCache.has(key)) solidCache.set(key, enhancePaint(new THREE.MeshPhysicalMaterial({ color: colour, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.07 })));
   return solidCache.get(key);
 }
 const glassDeformMat = new THREE.MeshPhysicalMaterial({ color: '#ffffff', vertexColors: true, metalness: 0, roughness: 0.03, envMapIntensity: 1.8, clearcoat: 1, clearcoatRoughness: 0 });
@@ -1320,10 +1479,25 @@ const crashPlateTex = canvasTex(256, 128, (g) => {
 });
 const crashPlateMat = new THREE.MeshStandardMaterial({ map: crashPlateTex, roughness: 0.35, metalness: 0.25 });
 
+// Road dust and dried mud thrown up along the lower body, baked into the paint colours (the dirt amount is per vehicle)
+const BUILD = { B: 0, dirt: 0, variant: 0 };
+let PLAYER_DIRT = 0.12; // your car gets grubbier with every run
+const DIRT_COL = new THREE.Color(0.27, 0.2, 0.13);
 function registerDeform(parts, g, mat, x, y, z, parent) {
   const n = g.attributes.position.count, base = mat.userData.base || new THREE.Color(1, 1, 1);
   const ca = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) { ca[i * 3] = base.r; ca[i * 3 + 1] = base.g; ca[i * 3 + 2] = base.b; }
+  const dirty = BUILD.dirt > 0 && mat !== glassDeformMat && mat !== playerGlassMat && mat.userData.base;
+  const pa = g.attributes.position;
+  for (let i = 0; i < n; i++) {
+    let r = base.r, gg = base.g, b = base.b;
+    if (dirty) {
+      const hy = y + pa.getY(i) - BUILD.B, px = pa.getX(i), pz = pa.getZ(i);
+      const nz = 0.5 + 0.5 * (Math.sin(px * 7.3 + pz * 3.1) * Math.sin(pz * 5.7 - px * 2.3 + hy * 4.1));
+      const k = BUILD.dirt * THREE.MathUtils.smoothstep(1.0 + (nz - 0.5) * 0.5, 0.1, hy) * (0.45 + 0.55 * nz);
+      r += (DIRT_COL.r - r) * k * 0.8; gg += (DIRT_COL.g - gg) * k * 0.8; b += (DIRT_COL.b - b) * k * 0.8;
+    }
+    ca[i * 3] = r; ca[i * 3 + 1] = gg; ca[i * 3 + 2] = b;
+  }
   g.setAttribute('color', new THREE.BufferAttribute(ca, 3));
   const m = new THREE.Mesh(g, mat);
   m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
@@ -1418,11 +1592,17 @@ const PROFILES = {
   pickup: { top: [[1, 0.74], [0.97, 0.9], [0.92, 1.02], [0.85, 1.06], [0.42, 1.12], [0.36, 1.13], [-0.97, 1.19], [-1, 1.02]], bottom: 0.36, r: 0.42, axles: [1.75, -1.75],
     cab: { belt: 1.13, roof: 1.9, zf0: 1.0, zf1: 0.28, zr0: -0.42, zr1: -0.34, wb: 0.95, wt: 0.84 } },
 };
+// Sedan, hatchback and coupe share one body envelope (so the physics is unchanged) but differ in glasshouse and roofline
+const doorHandleGeo = new RoundedBoxGeometry(0.025, 0.035, 0.15, 2, 0.01), mirrorGeo = new RoundedBoxGeometry(0.1, 0.075, 0.15, 2, 0.025);
+const CAR_VARIANTS = [null, { zr0: -2.05, zr1: -1.55 }, { roof: 1.37, zf0: 0.78, zf1: -0.2, zr0: -1.55, zr1: -1.0, wt: 0.7 }];
 function buildCar(type, colour, isPlayer, t, parts, inner) {
-  const P = PROFILES[type === 'pickup' ? 'pickup' : 'car'];
+  let P = PROFILES[type === 'pickup' ? 'pickup' : 'car'];
+  const variant = isPlayer || type === 'pickup' ? 0 : BUILD.variant;
+  if (variant) P = { ...P, cab: { ...P.cab, ...CAR_VARIANTS[variant] } };
   const L = t.L, W = t.W, B = -t.H / 2;
   const paint = paintMat(colour);
   const hull = registerDeform(parts, lowerBody(L, W, P.top, P.bottom, P.axles, P.r), paint, 0, B, 0, inner);
+  parts.hull = hull;
   const glassMesh = registerDeform(parts, cabinGeo(W, P.cab), isPlayer ? playerGlassMat : glassDeformMat, 0, B, 0, inner);
   parts.glass.push(glassMesh); if (isPlayer) glassMesh.renderOrder = 3;
   const roofM = registerDeform(parts, cabinGeo(W, P.cab, 0, isPlayer ? 0.075 : 0.05), isPlayer ? paintMat('#16181c') : paint, 0, B, 0, inner);
@@ -1449,6 +1629,45 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
     v.set(u * W / 2 * 0.86, lerpT(P.top, wn) - lerpT(P.top, P.top[4][0]) + h * 0.03, z - hz0);
   }), isPlayer ? paintMat('#16181c') : paint, 0, 0, 0, pivot);
   parts.bonnet = { pivot, mesh: hood };
+  if (!isPlayer) {
+    // ---- doors, boot lid and wing mirrors: separate panels that dent with the body, swing open or tear off in a crash
+    const yb0 = P.bottom, dz0 = type === 'pickup' ? -0.2 : -0.85, dz1 = Math.min(P.cab.zf0 - 0.03, 0.9);
+    const shell = (z, hf) => { // outer skin of the hull at length z; hf 0 = sill, 1 = belt
+      const wn = z / (L / 2), yt = lerpT(P.top, wn), ysill = yb0 + 0.14, ybelt = yt - 0.03, y = ysill + hf * (ybelt - ysill), hh = (y - yb0) / Math.max(0.02, yt - yb0);
+      const ends = THREE.MathUtils.smoothstep(Math.abs(wn), 0.72, 1), plan = 1 - 0.13 * ends * ends, tuck = 1 - 0.06 * (1 - hh) ** 2, shoulder = hh > 0.78 ? 1 - 0.11 * ((hh - 0.78) / 0.22) ** 2 : 1;
+      return { y, x: W / 2 * plan * tuck * shoulder };
+    };
+    parts.doors = {}; parts.mirrors = {};
+    for (const sd of [1, -1]) {
+      const hg = shell(dz1, 0.5), zone = sd > 0 ? 'left' : 'right';
+      const dp = new THREE.Group(); dp.position.set(sd * hg.x, B + hg.y, dz1); inner.add(dp);
+      const dg = sculpt([2, 7, 10], (v, u, h, w) => {
+        const z = dz0 + (w + 1) / 2 * (dz1 - dz0), sk = shell(z, h);
+        v.set(sd * (sk.x + 0.014 - (1 - sd * u) / 2 * 0.07) - sd * hg.x, sk.y - hg.y, z - dz1);
+      });
+      const dm = registerDeform(parts, dg, paint, 0, 0, 0, dp);
+      // shut lines: darken the panel's rim
+      const pa = dg.attributes.position, ca = dg.attributes.color; dg.computeBoundingBox(); const bb = dg.boundingBox, xm = (bb.min.x + bb.max.x) / 2;
+      for (let i = 0; i < pa.count; i++) {
+        const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i);
+        if (sd * (x - xm) > 0 && (y < bb.min.y + 0.02 || y > bb.max.y - 0.02 || z < bb.min.z + 0.03 || z > bb.max.z - 0.03)) { ca.setXYZ(i, ca.getX(i) * 0.4, ca.getY(i) * 0.4, ca.getZ(i) * 0.4); }
+      }
+      dm.userData.orig = pa.array.slice(); dm.userData.door = true;
+      const hd = new THREE.Mesh(doorHandleGeo, trimMat); hd.position.set(sd * 0.026, 0.1, dz0 - dz1 + 0.2); hd.castShadow = false; dm.add(hd);
+      parts.doors[zone] = { pivot: dp, mesh: dm, side: sd, z0: dz0, z1: dz1, y0: shell(dz0, 0).y - 0.04, y1: shell(dz1, 1).y + 0.03 };
+      const mr = part(inner, mirrorGeo, solidPaint(colour), sd * (W / 2 + 0.07), B + shell(dz1, 1).y + 0.09, dz1 - 0.12); mr.rotation.y = -sd * 0.25;
+      parts.mirrors[zone] = mr;
+    }
+    if (type !== 'pickup' && variant !== 1) {
+      const bz0 = P.cab.zr0 - 0.05, bz1 = P.top[8][0] * L / 2, bp = new THREE.Group(); bp.position.set(0, B + lerpT(P.top, bz0 / (L / 2)) + 0.004, bz0); inner.add(bp);
+      const bt = lerpT(P.top, bz0 / (L / 2));
+      const boot = registerDeform(parts, sculpt([8, 2, 8], (v, u, h, w) => {
+        const z = bz1 + (w + 1) / 2 * (bz0 - bz1);
+        v.set(u * W / 2 * 0.86, lerpT(P.top, z / (L / 2)) - bt + h * 0.03, z - bz0);
+      }), paint, 0, 0, 0, bp);
+      parts.boot = { pivot: bp, mesh: boot };
+    }
+  }
   if (type === 'pickup') part(inner, new THREE.BoxGeometry(W - 0.26, 0.22, 2.25), trimMat, 0, B + 1.08, -1.66);
   // bumpers, grille, lights, plates
   const noseY = B + P.bottom + 0.2;
@@ -1621,6 +1840,7 @@ function buildVehicle(type, colour, isPlayer = false) {
   const t = isPlayer ? PT : TYPES[type];
   const mk = () => { const outer = new THREE.Group(), inner = new THREE.Group(); inner.position.y = 0; outer.add(inner); return { outer, inner, parts: { deform: [], heads: [], tails: [], wheels: [], glass: [], bonnet: null, bumpF: null, bumpR: null } }; };
   const A = mk(); A.inner.position.y = t.H * COM_DROP;
+  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : 0.12 + Math.random() * 0.7; BUILD.variant = isPlayer || type !== 'car' ? 0 : (Math.random() * 3) | 0;
   if (isPlayer || type === 'car' || type === 'pickup') buildCar(isPlayer ? 'car' : type, colour, isPlayer, t, A.parts, A.inner);
   else buildTruck(type, colour, t, A.parts, A.inner);
   scene.add(A.outer);
@@ -1628,6 +1848,7 @@ function buildVehicle(type, colour, isPlayer = false) {
   const out = { group: A.outer, inner: A.inner, parts: A.parts, shardMat: new THREE.MeshStandardMaterial({ color: shard, metalness: 0.5, roughness: 0.4 }) };
   if (t.trailer) {
     const T = mk(); T.inner.position.y = t.trailer.H * COM_DROP;
+    BUILD.B = -t.trailer.H / 2;
     buildTrailer(!!t.trailer.tank, t.trailer, T.parts, T.inner);
     scene.add(T.outer);
     out.trailer = { group: T.outer, inner: T.inner, parts: T.parts, shardMat: new THREE.MeshStandardMaterial({ color: t.trailer.tank ? '#c9ced3' : '#eeeeec', metalness: 0.5, roughness: 0.4 }) };
@@ -1757,7 +1978,7 @@ class SpritePool {
 const softPool = new SpritePool(2600, softTex, false);
 const sparkPool = new SpritePool(1200, sparkTex, true);
 const firePool = new SpritePool(3200, softTex, true);
-const particleSys = { setScale(s) { softPool.setScale(s); sparkPool.setScale(s); firePool.setScale(s); } };
+const particleSys = { setScale(s) { softPool.setScale(s); sparkPool.setScale(s); firePool.setScale(s); windPool.setScale(s); lampPool.setScale(s); } };
 const lin = (hex) => new THREE.Color(hex);
 const PUFF = {
   black: { c: lin('#1c1b1d'), s0: 1.2, s1: 7.5, a: 0.75, life: 3.4, vy: 2.4, drag: 0.6, wind: 1.1 },
@@ -1800,6 +2021,12 @@ function addParticle(mesh, v, life, spin, rest = 0.02, roll = 0) {
 }
 function burst(point, n, colourMat, speed, kind = 'shard') {
   if (kind === 'spark') { sparks(point, n * 2, speed); return; }
+  if (kind === 'glass') { // a glittering spray of fine crazed glass that catches the sun as it falls
+    for (let i = 0; i < n * 5; i++) {
+      const a = Math.random() * 6.283, up = 0.2 + Math.random() * 0.9, sp = speed * (0.3 + Math.random() * 0.9), w = 1.3 + Math.random() * 1.7;
+      sparkPool.emit({ x: point.x, y: point.y, z: point.z, vx: Math.cos(a) * sp, vy: up * sp, vz: Math.sin(a) * sp, r: w * 0.8, gC: w * 1.05, b: w * 1.25, s0: 0.07 + Math.random() * 0.05, s1: 0.03, a: 0.9, life: 0.7 + Math.random() * 1.3, drag: 0.5, wind: 0, g: -9.8 });
+    }
+  }
   for (let i = 0; i < n; i++) {
     const m = new THREE.Mesh(shardGeo, kind === 'glass' ? glassShardMat : colourMat);
     m.position.copy(point); m.castShadow = kind !== 'glass';
@@ -1850,7 +2077,145 @@ function updateParticles(dt) {
   }
   softPool.update(dt); sparkPool.update(dt); firePool.update(dt);
 }
-function clearParticles() { for (const s of shards) dropShard(s); shards.length = 0; softPool.clear(); sparkPool.clear(); firePool.clear(); }
+function clearParticles() { for (const s of shards) dropShard(s); shards.length = 0; softPool.clear(); sparkPool.clear(); firePool.clear(); windPool.clear(); clearPools(); clearLeaks(); }
+
+/* ------------------------------------------------------------------ atmosphere and vehicle lighting effects */
+// Wind-blown dust: faint drifting veils across the desert near the camera, in gusts
+const windPool = new SpritePool(600, softTex, false);
+let windT = 0;
+function windDust(dt) {
+  windT += dt;
+  const gust = 0.55 + 0.45 * Math.sin(windT * 0.23) * Math.sin(windT * 0.071 + 1.3);
+  let n = dt * 26 * (0.4 + gust);
+  while (n > 0 && Math.random() < n) {
+    n -= 1;
+    const a = Math.random() * Math.PI * 2, r = 25 + Math.random() * 190, x = camera.position.x + Math.cos(a) * r, z = camera.position.z + Math.sin(a) * r;
+    const sh = 0.85 + Math.random() * 0.25;
+    windPool.emit({ x, y: groundY(x, z) + 0.2 + Math.random() * 2.2, z, vx: 0.4 + Math.random() * 0.6, vy: 0.05, vz: 0.2 + Math.random() * 0.4,
+      r: 0.62 * sh, gC: 0.5 * sh, b: 0.37 * sh, s0: 5 + Math.random() * 6, s1: 14 + Math.random() * 14, a: (0.035 + Math.random() * 0.05) * (0.5 + gust), life: 7 + Math.random() * 6, drag: 0.05, wind: 2.2 + gust * 3, g: 0 });
+  }
+  windPool.update(dt);
+}
+// Contact shadows for traffic beyond the reach of the shadow map: a soft dark oval under each vehicle, pushed away from the sun
+const BLOB_MAX = 220;
+const blobTex = canvasTex(64, 64, (g, w, h) => {
+  g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+  const gr = g.createRadialGradient(32, 32, 3, 32, 32, 31); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+}, { linear: true });
+const blobGeo = new THREE.PlaneGeometry(1, 1); blobGeo.rotateX(-Math.PI / 2); SHARED_GEO.add(blobGeo);
+const blobMesh = new THREE.InstancedMesh(blobGeo, new THREE.MeshBasicMaterial({ color: 0x120c06, alphaMap: blobTex, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }), BLOB_MAX);
+blobMesh.frustumCulled = false; blobMesh.renderOrder = 2; blobMesh.count = 0; scene.add(blobMesh);
+const SHADOW_DIR = new THREE.Vector3(-SUN_DIR.x, 0, -SUN_DIR.z).normalize();
+const _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion(), _bq2 = new THREE.Quaternion(), _bs = new THREE.Vector3(), _bpos = new THREE.Vector3(), _bf = new THREE.Vector3(), _lw = new THREE.Vector3();
+let blobN = 0;
+function addBlob(g, t) {
+  if (blobN >= BLOB_MAX || !g.visible) return;
+  const x = g.position.x, z = g.position.z, dx = x - sun.target.position.x, dz = z - sun.target.position.z;
+  if (dx * dx + dz * dz < 2916) return; // inside the shadow map: it draws the real thing
+  _bf.set(0, 0, 1).applyQuaternion(g.quaternion);
+  _bq.setFromAxisAngle(Y_AXIS, Math.atan2(_bf.x, _bf.z));
+  const ramp = z > HILL_TOP_Z && z < HILL_BOT_Z;
+  if (ramp) { _bq2.setFromAxisAngle(X_AXIS, HILL_ANGLE); _bq.premultiply(_bq2); }
+  const reach = t.H * 0.9;
+  _bpos.set(x + SHADOW_DIR.x * reach * 0.5, groundY(x, z) + 0.05, z + SHADOW_DIR.z * reach * 0.5);
+  _bs.set(t.W * 1.3 + reach * 0.25, 1, t.L * 1.1 + reach * 0.25);
+  _bm.compose(_bpos, _bq, _bs); blobMesh.setMatrixAt(blobN++, _bm);
+}
+// Lamp glare: the glow of headlights seen head on, brake lights, and hazard flashers on wrecks (one manually filled additive sprite pool)
+const lampPool = new SpritePool(900, sparkTex, true);
+let lampN = 0;
+function clearPools() { lampN = 0; lampPool.alpha.fill(0); lampPool.geo.attributes.aAlpha.needsUpdate = true; blobMesh.count = 0; }
+function addLamp(x, y, z, r, g, b, size, alpha) {
+  if (lampN >= 900 || alpha < 0.01) return;
+  const i = lampN++;
+  lampPool.pos[i * 3] = x; lampPool.pos[i * 3 + 1] = y; lampPool.pos[i * 3 + 2] = z;
+  lampPool.col[i * 3] = r; lampPool.col[i * 3 + 1] = g; lampPool.col[i * 3 + 2] = b;
+  lampPool.size[i] = size; lampPool.alpha[i] = alpha; lampPool.rot[i] = 0;
+}
+const _toCam = new THREE.Vector3();
+function lampsOf(g, inner, parts, v, cam) {
+  if (!parts || !g.visible) return;
+  const dxc = g.position.x - cam.x, dyc = g.position.y - cam.y, dzc = g.position.z - cam.z, d = Math.hypot(dxc, dyc, dzc);
+  if (d > 380 || d < 3) return;
+  const far = 1 - d / 400;
+  _bf.set(0, 0, 1).applyQuaternion(g.quaternion);
+  const fc = -(_bf.x * dxc + _bf.y * dyc + _bf.z * dzc) / d; // >0: the vehicle faces the camera
+  const dead = v && (v.burnt || v.flags && v.flags.heads);
+  const iy = inner ? inner.position.y : 0;
+  const sz = 0.55 + d * 0.013;
+  if (fc > 0.1 && !dead && parts.heads[0] && parts.heads[0].visible) {
+    const k = THREE.MathUtils.smoothstep(fc, 0.1, 0.85) * far;
+    for (const h of parts.heads) { _lw.copy(h.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 2.4, 2.1, 1.6, sz, 0.55 * k); }
+  } else if (fc < -0.1 && parts.tails.length && !dead) {
+    const braking = v ? (v.braking || (v.panic && v.panic.brake) || v.state === 'loose') : false;
+    const k = THREE.MathUtils.smoothstep(-fc, 0.1, 0.8) * far;
+    if (braking || v === player.veh) for (const t of parts.tails) { _lw.copy(t.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 3.2, 0.25, 0.12, sz * 0.8, 0.5 * k * (braking ? 1 : 0.3)); }
+  }
+  // hazard flashers on wrecks whose electrics survived
+  if (v && v.state === 'loose' && !dead && !v.burnt && parts.heads.length && v.body && v.body.id % 3 !== 0) {
+    const on = (Math.floor(realClock * 1.7 + (v.body.id & 7) * 0.13) & 1) === 0;
+    if (on) for (const arr of [parts.heads, parts.tails]) for (const h of arr) { _lw.copy(h.position); _lw.y += iy; _lw.applyQuaternion(g.quaternion).add(g.position); addLamp(_lw.x, _lw.y, _lw.z, 3.0, 1.35, 0.1, 0.55 + d * 0.008, 0.6 * far); }
+  }
+}
+function updateVehicleFx() {
+  blobN = 0; lampN = 0;
+  const cam = camera.position;
+  for (const v of vehicles) {
+    if (v.state === 'gone' || !v.group.visible) continue;
+    addBlob(v.group, v.t);
+    lampsOf(v.group, v.inner, v.parts, v, cam);
+  }
+  for (const gh of ghostsIn.values()) { const t = TYPES[gh.type]; if (!t) continue; addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
+  for (const gh of ghostsOut) { const t = TYPES[gh.type]; if (!t) continue; addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
+  if (player.veh && player.mesh && state !== 'ready') lampsOf(player.mesh, player.veh.inner, player.veh.parts, player.veh, cam);
+  blobMesh.count = blobN; blobMesh.instanceMatrix.needsUpdate = true;
+  for (let i = lampN; i < Math.min(900, lampN + 4); i++) lampPool.alpha[i] = 0;
+  lampPool.geo.setDrawRange(0, lampN + 4);
+  for (const a of ['position', 'aColor', 'aAlpha', 'aSize', 'aRot']) lampPool.geo.attributes[a].needsUpdate = true;
+}
+
+/* ------------------------------------------------------------------ crash scenery: shockwave dust, leaking fluids */
+let lastShock = -9;
+function shockRing(p, vel) {
+  if (realClock - lastShock < 0.22) return;
+  lastShock = realClock;
+  const n = Math.min(24, 8 + Math.round(vel * 0.55)), sp = 3.5 + vel * 0.22, gy = groundY(p.x, p.z) + 0.25, sand = !onRoad(p.x, p.z);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * 6.283 + Math.random() * 0.3, c = Math.cos(a), s = Math.sin(a), k = 0.7 + Math.random() * 0.6, sh = 0.9 + Math.random() * 0.2;
+    softPool.emit({ x: p.x + c * 0.6, y: gy, z: p.z + s * 0.6, vx: c * sp * k, vy: 0.2 + Math.random() * 0.4, vz: s * sp * k,
+      r: (sand ? 0.78 : 0.6) * sh, gC: (sand ? 0.64 : 0.56) * sh, b: (sand ? 0.47 : 0.5) * sh, s0: 0.9, s1: 4 + vel * 0.14, a: 0.3, life: 1.5 + Math.random() * 0.9, drag: 2.0, wind: 0.6, g: 0 });
+  }
+}
+// Wrecks that are badly hurt weep fuel and oil: glossy dark puddles that spread under and behind them
+const fuelMat = new THREE.MeshStandardMaterial({ color: '#0c0907', roughness: 0.1, metalness: 0, alphaMap: blobTex, transparent: true, opacity: 0.85, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, envMapIntensity: 1.6 });
+const puddles = [], leakers = []; let puddleIdx = 0;
+const PUDDLE_MAX = 90;
+function startLeak(v) { v.leak = { t: 0, x: 1e9, z: 1e9 }; leakers.push(v); }
+function dropPuddle(x, z, size) {
+  let m = puddles[puddleIdx];
+  if (!m) { m = new THREE.Mesh(blobGeo, fuelMat); m.renderOrder = 2; scene.add(m); puddles[puddleIdx] = m; m.userData = {}; }
+  puddleIdx = (puddleIdx + 1) % PUDDLE_MAX;
+  m.visible = true; m.position.set(x, groundY(x, z) + 0.045, z); m.rotation.y = Math.random() * 6.28; m.userData.size = size; m.userData.age = 0; m.scale.set(0.01, 1, 0.01);
+  m.userData.stretch = 0.7 + Math.random() * 0.6;
+}
+function updateLeaks(dt) {
+  for (let i = leakers.length - 1; i >= 0; i--) {
+    const v = leakers[i];
+    if (v.state === 'gone' || v.burnt) { leakers.splice(i, 1); continue; }
+    const p = v.body.position, moved = Math.hypot(p.x - v.leak.x, p.z - v.leak.z);
+    v.leak.t += dt;
+    if (moved > 1.4 && v.leak.t > 0.2 && v.state !== 'player') { v.leak.t = 0; v.leak.x = p.x; v.leak.z = p.z; dropPuddle(p.x, p.z, 0.8 + Math.random() * 1.1 + v.t.mass * 0.00015); }
+  }
+  for (const m of puddles) {
+    if (!m || !m.visible) continue;
+    const u = m.userData; u.age += dt;
+    const k = 1 - Math.exp(-u.age * 0.55);
+    m.scale.set(u.size * 2.6 * k, 1, u.size * 2.6 * k * u.stretch);
+  }
+}
+function clearLeaks() { leakers.length = 0; for (const m of puddles) if (m) m.visible = false; puddleIdx = 0; }
+
 
 /* ------------------------------------------------------------------ traffic */
 // Right-hand traffic. Each lane is a path with a stop line and a signal group.
@@ -2128,7 +2493,7 @@ function takeGhost(L, idx) { const k = L.id + ':' + idx, g = ghostsIn.get(k); if
 function retireVehicle(v) {
   const L = v.lane;
   if (v.state !== 'driven') { removeVehicle(v); return; }
-  const g = { L, s: v.s, v: v.v, type: v.type, built: { group: v.group, trailer: v.trailer ? { group: v.trailer.group } : null } };
+  const g = { L, s: v.s, v: v.v, type: v.type, built: { group: v.group, inner: v.inner, parts: v.parts, trailer: v.trailer ? { group: v.trailer.group, inner: v.trailer.inner, parts: v.trailer.parts } : null } };
   v.group = new THREE.Group(); if (v.trailer) v.trailer.group = new THREE.Group(); // keep the meshes; the bodies go
   removeVehicle(v); ghostsOut.push(g);
 }
@@ -2144,7 +2509,7 @@ function updateGhosts(dt) {
       if (d > maxD) break;
       const key = L.id + ':' + idx; seen.add(key);
       let g = ghostsIn.get(key);
-      if (!g) { g = { built: buildVehicle(type, vehColour(L, idx)) }; ghostsIn.set(key, g); }
+      if (!g) { g = { type, built: buildVehicle(type, vehColour(L, idx)) }; ghostsIn.set(key, g); }
       placeGhost(g.built, type, L, -d);
       T += L.headway * (t.L > 8 || t.trailer ? 1.35 : 1) * (player.crashed ? 1.5 : 1);
       prev = d; prevT = t; idx++;
@@ -2509,6 +2874,7 @@ const player = { body: null, mesh: null, veh: null, yaw: 0, speed: 0, crashed: f
 function makePlayer(colour = '#F2B705') {
   const body = makeBody(PT, true);
   body.position.set(START_X, HILL_H + PT.H / 2 - PT.H * COM_DROP + 0.05, ROUTE_Z + LANE);
+  try { PLAYER_DIRT = Math.min(0.75, 0.1 + 0.22 * game.round); } catch (_) { PLAYER_DIRT = 0.1; } // grubbier with every run
   const built = buildVehicle('car', colour, true);
   const veh = newVehState(PT, body, built, { isPlayer: true, state: 'player', label: PT.label });
   body.addEventListener('collide', (e) => { onPlayerCollide(e); onCollide(veh, e); });
@@ -2751,6 +3117,17 @@ function shatter(v, key, point, n) {
   sfxGlass(point);
   for (const g of v.parts.glass) g.material = crackedGlassMat;
 }
+// A door torn off: it flies away, and the hole it leaves shows dark inside
+function tearDoor(v, dr, out) {
+  detach(v, dr.mesh, out, 4.5);
+  const hm = v.parts.hull; if (!hm) return;
+  const pos = hm.geometry.attributes.position, col = hm.geometry.attributes.color, W = v.t.W;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    if (dr.side * x > W * 0.3 && z > dr.z0 - 0.03 && z < dr.z1 + 0.03 && y > dr.y0 && y < dr.y1) col.setXYZ(i, col.getX(i) * 0.12, col.getY(i) * 0.12, col.getZ(i) * 0.13);
+  }
+  col.needsUpdate = true;
+}
 function zoneEffects(v, zone, h) {
   const d = v.zone[zone], P = v.parts, F = v.flags;
   const out = h.dirIn.clone().negate();
@@ -2764,7 +3141,11 @@ function zoneEffects(v, zone, h) {
     if (d > 0.08 && !F.tails) { F.tails = true; P.tails.forEach((m) => { m.visible = false; }); burst(h.point, 5, null, 3, 'glass'); }
     if (d > 0.22 && P.bumpR && !F.bumpR) { F.bumpR = true; detach(v, P.bumpR, out, 2.5); }
     if (d > 0.35) shatter(v, 'rearscreen', h.point, 8);
+    if (d > 0.3 && P.boot && !F.boot) { F.boot = true; P.boot.pivot.rotation.x = 0.45 + Math.random() * 0.6; P.boot.pivot.rotation.z = (Math.random() - 0.5) * 0.2; }
   } else if (zone === 'left' || zone === 'right') {
+    const mir = P.mirrors && P.mirrors[zone]; if (mir && d > 0.08 && !F['mir' + zone]) { F['mir' + zone] = true; detach(v, mir, out, 3); }
+    const dr = P.doors && P.doors[zone];
+    if (dr && d > 0.2 && !F['door' + zone]) { F['door' + zone] = true; if (d > 0.42 || Math.random() < 0.3) tearDoor(v, dr, out); else dr.pivot.rotation.y = -dr.side * (0.6 + Math.random() * 0.8); }
     if (d > 0.15) shatter(v, 'side-' + zone, h.point, 12);
     if (d > 0.5) {
       // knock off the wheel nearest the impact on that side
@@ -2802,12 +3183,14 @@ function applyHit(h) {
   if (h.vel > 4) burst(h.point, 6, null, 8, 'spark');
   if (h.vel > 9) for (let i = 0; i < 3; i++) puff(h.point, h.isGround && !onRoad(h.point.x, h.point.z) ? 'dust' : 'grey');
   if (h.isGround && !onRoad(h.point.x, h.point.z)) dustCloud(h.point, 4, 2);
+  if (h.vel > 13) shockRing(h.point, h.vel);
   if (h.vel > 20) blurPulse(h.point, Math.min(0.09, h.vel * 0.003));
   if (h.vel > 16) cam.shake = Math.max(cam.shake, Math.min(0.6, h.vel * 0.02));
   sfxImpact(h.vel, h.point, v.t.mass > 4000 || (h.otherMass || 0) > 4000);
   if (h.vel > 15) noteEvent('hit', h.point, v);
   if (h.vel > 10 && realClock - lastRumble > 0.18) { lastRumble = realClock; rumble(Math.min(0.7, h.vel * 0.022), Math.min(0.9, h.vel * 0.03), 140); }
 
+  if (!v.leak && v.zone.front + v.zone.rear + v.zone.left + v.zone.right > 0.55) startLeak(v);
   const gained = addDamage(v, add);
   const o = v.tractor || v;
   if (gained > 0) {
@@ -2948,6 +3331,11 @@ function emitFlame(p, big, I) {
   firePool.emit({ x: p.x, y: p.y, z: p.z, vx: j() * 0.8, vy: 2.2 + fireRng() * 2.4, vz: j() * 0.8,
     r: hot ? 6.5 : 4.6, gC: hot ? 3.0 : 1.3, b: hot ? 0.9 : 0.22,
     s0: (big ? 1.8 : 1.1) * (0.6 + I * 0.6) * (0.7 + fireRng() * 0.6), s1: 0.25, a: 0.85, life: 0.45 + fireRng() * 0.45, drag: 0.9, wind: 0.7, g: 0 });
+  // glowing embers lifting off the fire and drifting downwind (Math.random: purely visual, leaves the seeded fire stream alone)
+  if (Math.random() < 0.3 * I + 0.05) {
+    const h = 1.5 + Math.random() * 2.5;
+    sparkPool.emit({ x: p.x, y: p.y, z: p.z, vx: (Math.random() - 0.5) * 2, vy: 3 + Math.random() * 4, vz: (Math.random() - 0.5) * 2, r: 4.5 * h * 0.6, gC: 1.5 * h * 0.6, b: 0.25, s0: 0.1 + Math.random() * 0.08, s1: 0.02, a: 1, life: 1.6 + Math.random() * 2.4, drag: 0.4, wind: 1.6, g: 0.6 });
+  }
 }
 function charUnit(u, k) {
   for (const m of u.parts.deform) {
@@ -4241,6 +4629,7 @@ function syncMeshes(a = 1) {
   }
   for (const f of fallen) { f.grp.position.copy(f.body.position); f.grp.quaternion.copy(f.body.quaternion); }
   updateShellClips();
+  updateVehicleFx();
 }
 const _ex = new THREE.Vector3();
 let smokeT = 0;
@@ -4308,12 +4697,15 @@ function tick(dtReal) {
     if (n === 5) acc = 0;
   }
   updateParticles(dtReal * timeScale);
+  windDust(dtReal);
+  updateLeaks(dtReal * timeScale);
   syncMeshes(state === 'running' ? Math.min(1, acc / STEP) : 1);
   adaptQuality(dtReal);
   updateCamera(dtReal);
   updateAudio(dtReal);
   updateFireLights(dtReal);
   updateBlur(dtReal);
+  updateFx(dtReal);
   updateHud();
   if (!$('#debug').hidden) $('#debug').textContent = `fps ${fpsAvg.toFixed(0)} · gfx ${GFX.level}\nbodies ${world.bodies.length}\nwrecks loose ${vehicles.filter((v) => v.state === 'loose').length}\ntraffic ${vehicles.filter((v) => v.state === 'driven').length}\ntime x${timeScale.toFixed(2)}`;
   for (const v of vehicles) if (v.state !== 'gone') spinWheels(v, dtReal * timeScale, v.panic ? v.panic.steer : 0);
@@ -4471,7 +4863,7 @@ audioInit(); // starts suspended until the player's first touch or key (browser 
 requestAnimationFrame(frame);
 
 // Hook for automated testing
-window.__hsxTest = { CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
+window.__hsxTest = { CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); updateLeaks(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, fxPass, dofPass, fxState, lampPool, blobMesh, get lampN() { return lampN; }, get blobN() { return blobN; }, get puddleN() { return puddles.filter((m) => m && m.visible).length; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
 </script>
 
 </body>
