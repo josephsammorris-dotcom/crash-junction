@@ -1545,7 +1545,12 @@ function sculpt(seg, fn) {
   const m = BGU.mergeVertices(g, 1e-5); m.computeVertexNormals(); return m;
 }
 // Rounded box with a dense, evenly spread mesh (for panels that need to dent)
-function roundedDense(w, h, d, r, res = 0.3) {
+// Building a sculpted panel (dense grid, merge, normals) is the slow part of spawning a vehicle; the same panel
+// shapes recur constantly, so build each once and hand out copies (each copy dents on its own)
+const GEO_CACHE = new Map();
+function cachedGeo(key, make) { let g = GEO_CACHE.get(key); if (!g) { g = make(); GEO_CACHE.set(key, g); } return g.clone(); }
+function roundedDense(w, h, d, r, res = 0.3) { return cachedGeo('rd' + [w, h, d, r, res].join(','), () => roundedDense0(w, h, d, r, res)); }
+function roundedDense0(w, h, d, r, res = 0.3) {
   const seg = [Math.max(3, Math.round(w / res)), Math.max(3, Math.round(h / res)), Math.max(3, Math.round(d / res))];
   const hx = w / 2, hy = h / 2, hz = d / 2;
   return sculpt(seg, (v, u, hh, ww) => {
@@ -1568,7 +1573,8 @@ function bodyHalfX(W, wn, hh, z, axles, r) {
   for (const az of axles) { const dz = Math.abs(z - az), R = r + 0.33; if (dz < R) flare = Math.max(flare, (1 - (dz / R) ** 2) * Math.exp(-(((hh - 0.42) / 0.3) ** 2))); }
   return W / 2 * plan * tuck * shoulder * crease * (1 + 0.032 * flare);
 }
-function lowerBody(L, W, top, bottom, axles, r) {
+function lowerBody(L, W, top, bottom, axles, r) { return cachedGeo('lb' + JSON.stringify([L, W, top, bottom, axles, r]), () => lowerBody0(L, W, top, bottom, axles, r)); }
+function lowerBody0(L, W, top, bottom, axles, r) {
   return sculpt([20, 12, 52], (v, u, h, w) => {
     const z = w * L / 2;
     let yb = bottom + (Math.abs(w) > 0.84 ? 0.24 * ((Math.abs(w) - 0.84) / 0.16) ** 2 : 0);
@@ -1580,7 +1586,8 @@ function lowerBody(L, W, top, bottom, axles, r) {
   });
 }
 // The glasshouse: raked, curved windscreen, tumblehome, a crowned roof with rounded edges
-function cabinGeo(W, c, yOff = 0, thick = null) {
+function cabinGeo(W, c, yOff = 0, thick = null) { return cachedGeo('cb' + JSON.stringify([W, c, yOff, thick]), () => cabinGeo0(W, c, yOff, thick)); }
+function cabinGeo0(W, c, yOff = 0, thick = null) {
   return sculpt([12, 7, 20], (v, u, h, w) => {
     const hh = thick ? 1 : h;
     const k = Math.pow(hh, 0.9), bow = 1 - u * u;
@@ -1804,6 +1811,28 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
   }
   return hull;
 }
+// ---- helpers for the trucks: several boxes merged into one mesh (one draw call), grilles and mirrors on arms
+function boxAt(w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) { const g = new THREE.BoxGeometry(w, h, d); if (rx || ry || rz) g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz))); g.translate(x, y, z); return g; }
+function merged(geos) { const ng = geos.map((g) => { const c = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(c.attributes)) if (k !== 'position' && k !== 'normal') c.deleteAttribute(k); return c; }); const m = BGU.mergeGeometries(ng); return m; }
+function mergedPart(inner, geos, mat) { return part(inner, merged(geos), mat, 0, 0, 0); }
+function deformMerged(parts, inner, geos, mat, key) { const mk = () => { const g = BGU.mergeVertices(merged(typeof geos === 'function' ? geos() : geos), 1e-5); g.computeVertexNormals(); return g; }; return registerDeform(parts, key ? cachedGeo(key, mk) : mk(), mat, 0, 0, 0, inner); }
+function truckGrille(inner, w, h, y, z, slats, slatMat = chrome) {
+  part(inner, new RoundedBoxGeometry(w, h, 0.07, 2, 0.025), grilleMat, 0, y, z);
+  const g = []; for (let i = 0; i < slats; i++) g.push(boxAt(w - 0.06, 0.03, 0.03, 0, y - h / 2 + h * (i + 1) / (slats + 1), z + 0.04));
+  g.push(boxAt(w + 0.06, 0.05, 0.05, 0, y + h / 2 + 0.02, z + 0.015), boxAt(w + 0.06, 0.05, 0.05, 0, y - h / 2 - 0.02, z + 0.015), boxAt(0.05, h + 0.06, 0.05, w / 2 + 0.02, y, z + 0.015), boxAt(0.05, h + 0.06, 0.05, -w / 2 - 0.02, y, z + 0.015));
+  return mergedPart(inner, g, slatMat);
+}
+function armMirror(parts, inner, side, x0, y, z, reach, tall = 0.36) {
+  const xm = x0 + side * reach, g = [boxAt(reach, 0.035, 0.035, x0 + side * reach / 2, y + tall * 0.3, z), boxAt(reach, 0.035, 0.035, x0 + side * reach / 2, y - tall * 0.3, z), boxAt(0.05, tall + 0.04, 0.2, xm, y, z)];
+  const head = mergedPart(inner, g, trimMat);
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(0.01, tall - 0.04, 0.16), chrome); glass.position.set(xm, y, z - 0.012); glass.rotation.y = 0; head.attach(glass);
+  head.userData.breakable = true;
+  (parts.mirrors ||= {})[side > 0 ? 'left' : 'right'] = head;
+  return head;
+}
+function mudFlaps(inner, W, y, zs) { const g = []; for (const z of zs) for (const s of [-1, 1]) g.push(boxAt(0.5, 0.55, 0.02, s * (W / 2 - 0.32), y, z)); return mergedPart(inner, g, rubberMat); }
+const amberMat = new THREE.MeshStandardMaterial({ color: '#7a4304', emissive: '#ff8a10', emissiveIntensity: 0.35, roughness: 0.2 });
+const tapeMat = new THREE.MeshStandardMaterial({ color: '#b0201a', roughness: 0.3, metalness: 0.2, emissive: '#400', emissiveIntensity: 0.2 });
 function buildTruck(type, colour, t, parts, inner) {
   const L = t.L, W = t.W, H = t.H, B = -t.H / 2;
   if (type === 'van') {
@@ -1822,11 +1851,32 @@ function buildTruck(type, colour, t, parts, inner) {
     parts.bumpR = part(inner, new THREE.BoxGeometry(W * 0.92, 0.14, 0.14), trimMat, 0, B + 0.55, -L / 2 + 0.05);
     lamps(parts, inner, L / 2 - 0.08, -L / 2 + 0.02, B + 0.98, B + 1.2, W * 0.36, W * 0.44);
     for (const s of [-1, 1]) { makeWheel(parts, inner, s * (W / 2 - 0.2), B + 0.48, L / 2 - 0.85 - 0.0, 0.48, 0.28, true); makeWheel(parts, inner, s * (W / 2 - 0.28), B + 0.48, -L / 2 + 1.5, 0.48, 0.26, false, true); }
+    // cab: grille, mirrors on arms, plates, black sill trims
+    truckGrille(inner, W * 0.5, 0.26, B + 0.74, L / 2 - 0.02, 3);
+    for (const s of [-1, 1]) armMirror(parts, inner, s, s * W / 2, B + 1.85, L / 2 - 0.55, 0.22);
+    part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + 0.45, L / 2 + 0.08);
+    // the box: corner posts, rails and side ribs (one mesh that dents with the box), a ribbed roller door, marker lights, mud flaps
+    const boxW = '#d9d8d2', ribG = [], top = B + H - 0.05, bot = B + 1.0;
+    for (const s of [-1, 1]) {
+      for (let z = bz - boxL / 2 + 0.05; z <= bz + boxL / 2 - 0.04; z += boxL / 7) ribG.push(boxAt(0.025, top - bot, 0.05, s * (W / 2 + 0.01), (top + bot) / 2, z));
+      ribG.push(boxAt(0.07, 0.1, boxL, s * (W / 2 + 0.025), top - 0.05, bz), boxAt(0.07, 0.12, boxL, s * (W / 2 + 0.025), bot + 0.06, bz));
+    }
+    deformMerged(parts, inner, ribG, paintMat(boxW, 0.3, 0.4), 'vanribs' + L);
+    const dz = -L / 2 + 0.02, door = [];
+    for (let y = bot + 0.12; y < top - 0.1; y += 0.22) door.push(boxAt(W - 0.2, 0.05, 0.03, 0, y, dz - 0.03));
+    door.push(boxAt(W - 0.1, 0.08, 0.05, 0, bot + 0.04, dz - 0.03), boxAt(0.3, 0.05, 0.05, 0, bot + 0.25, dz - 0.05));
+    deformMerged(parts, inner, door, paintMat('#c9c8c2', 0.3, 0.45), 'vandoor' + L);
+    mergedPart(inner, [boxAt(0.08, 0.05, 0.02, W / 2 + 0.05, bot + 0.2, bz + boxL / 2 - 0.2), boxAt(0.08, 0.05, 0.02, -W / 2 - 0.05, bot + 0.2, bz + boxL / 2 - 0.2), boxAt(0.08, 0.05, 0.02, W / 2 + 0.05, bot + 0.2, bz - boxL / 2 + 0.2), boxAt(0.08, 0.05, 0.02, -W / 2 - 0.05, bot + 0.2, bz - boxL / 2 + 0.2)].map((g) => { g.rotateY(0); return g; }), amberMat);
+    mudFlaps(inner, W, B + 0.35, [-L / 2 + 0.85]);
+    part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + 0.75, -L / 2 - 0.02).rotation.y = Math.PI;
     return;
   }
   if (type === 'bus') {
     const yellow = paintMat('#f0a400', 0.05, 0.38), noseL = 1.6, bodyL = L - noseL, bz = -L / 2 + bodyL / 2;
-    registerDeform(parts, roundedDense(W, H - 0.55, bodyL, 0.32, 0.4), yellow, 0, B + 0.55 + (H - 0.55) / 2, bz, inner).userData.band = [B + 1.8, B + 2.6, false];
+    const bg = roundedDense(W, H - 0.55, bodyL, 0.32, 0.4), bp = bg.attributes.position;
+    for (let i = 0; i < bp.count; i++) { const y = bp.getY(i) / ((H - 0.55) / 2); if (y > 0.25) bp.setX(i, bp.getX(i) * (1 - 0.045 * ((y - 0.25) / 0.75) ** 1.5)); } // sides lean in above the windows
+    bg.computeVertexNormals();
+    registerDeform(parts, bg, yellow, 0, B + 0.55 + (H - 0.55) / 2, bz, inner).userData.band = [B + 1.8, B + 2.6, false];
     parts.busSeats = { z0: bz - bodyL / 2 + 1.0, z1: bz + bodyL / 2 - 1.2, B, W, wheelZ: L / 2 - noseL - 0.4 };
     registerDeform(parts, lowerBody(noseL + 0.4, W * 0.9, [[1, 0.9], [0.8, 1.3], [0.3, 1.42], [-1, 1.45]], 0.5, [-0.3], 0.5), yellow, 0, B, L / 2 - noseL / 2 + 0.1, inner);
     // window band and pillars, black rub rails
@@ -1842,6 +1892,18 @@ function buildTruck(type, colour, t, parts, inner) {
     parts.bumpR = part(inner, new THREE.BoxGeometry(W, 0.3, 0.22), trimMat, 0, B + 0.6, -L / 2 - 0.05);
     lamps(parts, inner, L / 2 - 0.05, -L / 2 - 0.03, B + 1.05, B + 1.3, W * 0.36, W * 0.4);
     for (const s of [-1, 1]) { makeWheel(parts, inner, s * (W / 2 - 0.25), B + 0.5, L / 2 - 1.0, 0.5, 0.3, true); makeWheel(parts, inner, s * (W / 2 - 0.3), B + 0.5, -L / 2 + 2.9, 0.5, 0.28, false, true); }
+    truckGrille(inner, 0.95, 0.5, B + 0.95, L / 2 + 0.02, 5);
+    for (const s of [-1, 1]) armMirror(parts, inner, s, s * W * 0.42, B + 1.75, L / 2 - 0.35, 0.42, 0.42);
+    // stop arm on the driver's side, folded flat against the body
+    const stopTex = canvasTex(64, 64, (g) => { g.fillStyle = '#fff'; g.beginPath(); for (let i = 0; i < 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; g.lineTo(32 + Math.cos(a) * 31, 32 + Math.sin(a) * 31); } g.fill(); g.fillStyle = '#c8161c'; g.beginPath(); for (let i = 0; i < 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; g.lineTo(32 + Math.cos(a) * 27, 32 + Math.sin(a) * 27); } g.fill(); g.fillStyle = '#fff'; g.font = 'bold 15px Arial'; g.textAlign = 'center'; g.fillText('STOP', 32, 38); });
+    stopTex.userData.perVehicle = true;
+    const stop = part(inner, new THREE.PlaneGeometry(0.46, 0.46), new THREE.MeshStandardMaterial({ map: stopTex, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.4 }), W / 2 + 0.035, B + 1.55, L / 2 - noseL - 0.9);
+    stop.rotation.y = Math.PI / 2; stop.userData.breakable = true;
+    // rear emergency-door window, roof hatches, rear bumper tape
+    parts.glass.push(registerDeform(parts, roundedDense(W - 0.5, 0.85, 0.05, 0.03, 0.3), busGlassMat, 0, B + 2.15, -L / 2 - 0.015, inner));
+    mergedPart(inner, [boxAt(0.7, 0.07, 0.7, 0, B + H + 0.03, bz + bodyL * 0.22), boxAt(0.7, 0.07, 0.7, 0, B + H + 0.03, bz - bodyL * 0.22)], solidPaint('#e8e6df', 0.1, 0.5));
+    mudFlaps(inner, W, B + 0.35, [L / 2 - 1.6, -L / 2 + 2.3]);
+    part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + 0.95, -L / 2 - 0.035).rotation.y = Math.PI;
     return;
   }
   // Semi tractor: long-nose conventional cab with sleeper, chrome grille and stacks
@@ -1853,9 +1915,18 @@ function buildTruck(type, colour, t, parts, inner) {
   parts.rigSeats = { z: tz - hoodL - 0.9, y: B + 1.95, W };
   parts.glass.push(registerDeform(parts, roundedDense(W - 0.3, 0.85, 0.08, 0.04, 0.3), glassDeformMat, 0, B + 2.65, tz - hoodL + 0.02, inner));
   for (const s of [-1, 1]) parts.glass.push(registerDeform(parts, roundedDense(0.06, 0.75, 1.1, 0.03, 0.3), glassDeformMat, s * (W / 2 + 0.01), B + 2.65, tz - hoodL - 0.9, inner));
-  part(inner, new RoundedBoxGeometry(1.2, 1.0, 0.08, 2, 0.04), chrome, 0, B + 1.25, tz + 0.06);
+  truckGrille(inner, 1.15, 0.95, B + 1.25, tz + 0.04, 9);
+  part(inner, new THREE.CylinderGeometry(0.08, 0.08, 0.03, 16), chrome, 0, B + 1.86, tz - 0.1).rotation.x = Math.PI / 2; // hood ornament badge
+  for (const s of [-1, 1]) armMirror(parts, inner, s, s * W / 2, B + 2.6, tz - hoodL - 0.1, 0.32, 0.6);
+  // sun visor over the windscreen, air horns on the roof, steps under the door, marker lights along the cab roof
+  part(inner, new THREE.BoxGeometry(W - 0.2, 0.05, 0.35), paint, 0, B + 3.18, tz - hoodL + 0.12).rotation.x = 0.15;
+  const horns = mergedPart(inner, [new THREE.CylinderGeometry(0.05, 0.09, 0.55, 12).rotateX(Math.PI / 2).translate(0.3, B + 3.28, tz - hoodL - 0.5), new THREE.CylinderGeometry(0.05, 0.08, 0.45, 12).rotateX(Math.PI / 2).translate(0.45, B + 3.28, tz - hoodL - 0.45)], chrome);
+  horns.userData.breakable = true;
+  mergedPart(inner, [-0.6, -0.3, 0, 0.3, 0.6].map((x) => boxAt(0.1, 0.05, 0.04, x, B + 3.24, tz - hoodL + 0.02)), amberMat);
+  for (const s of [-1, 1]) mergedPart(inner, [boxAt(0.32, 0.04, 0.5, s * (W / 2 - 0.05), B + 0.62, tz - hoodL - 0.95), boxAt(0.32, 0.04, 0.5, s * (W / 2 - 0.05), B + 1.02, tz - hoodL - 0.95)], chrome);
+  mudFlaps(inner, W, B + 0.38, [-L / 2 + 0.1]);
   for (const s of [-1, 1]) {
-    part(inner, new THREE.CylinderGeometry(0.1, 0.1, 3.2, 14), chrome, s * (W / 2 - 0.05), B + 2.6, tz - hoodL - cabL - 0.1);
+    part(inner, new THREE.CylinderGeometry(0.1, 0.1, 3.2, 14), chrome, s * (W / 2 - 0.05), B + 2.6, tz - hoodL - cabL - 0.1).userData.breakable = true;
     const ft = part(inner, new THREE.CylinderGeometry(0.33, 0.33, 1.4, 20), chrome, s * (W / 2 - 0.25), B + 0.75, tz - hoodL - 0.9); ft.rotation.x = Math.PI / 2;
   }
   parts.bumpF = part(inner, new RoundedBoxGeometry(W, 0.34, 0.28, 3, 0.1), chrome, 0, B + 0.65, tz + 0.12);
@@ -1874,10 +1945,34 @@ function buildTrailer(tank, t, parts, inner) {
     registerDeform(parts, roundedDense(W, H - 1.25, L, 0.06, 0.45), paintMat('#eeeeec', 0.15, 0.4), 0, B + 1.25 + (H - 1.25) / 2, 0, inner).userData.band = [B + 1.5, B + H - 0.16, true];
     registerDeform(parts, roundedDense(W + 0.03, 0.5, L - 0.6, 0.04, 0.45), paintMat('#a3241c', 0.2, 0.4), 0, B + 2.2, 0, inner).userData.hideShell = true;
     registerDeform(parts, roundedDense(W + 0.03, 0.18, L - 0.6, 0.03, 0.45), paintMat('#1e3760', 0.2, 0.4), 0, B + 1.82, 0, inner).userData.hideShell = true;
+    // logistic posts and top/bottom rails, the rear doors with their lock bars, aero side skirts (all dent with the box)
+    const top = B + H - 0.04, bot = B + 1.25, rib = [];
+    for (const s of [-1, 1]) {
+      for (let z = -L / 2 + 0.05; z <= L / 2 - 0.04; z += L / 12) rib.push(boxAt(0.02, top - bot, 0.045, s * (W / 2 + 0.008), (top + bot) / 2, z));
+      rib.push(boxAt(0.06, 0.09, L, s * (W / 2 + 0.02), top - 0.045, 0), boxAt(0.06, 0.14, L, s * (W / 2 + 0.02), bot + 0.07, 0));
+    }
+    deformMerged(parts, inner, rib, paintMat('#d6d6d2', 0.4, 0.4), 'trribs' + L);
+    const dr = [boxAt(0.04, top - bot - 0.1, 0.04, 0, (top + bot) / 2, -L / 2 - 0.03)];
+    for (const x of [-0.85, -0.45, 0.45, 0.85]) dr.push(boxAt(0.035, top - bot - 0.25, 0.035, x, (top + bot) / 2, -L / 2 - 0.05));
+    for (const y of [bot + 0.12, top - 0.12]) dr.push(boxAt(W - 0.08, 0.06, 0.03, 0, y, -L / 2 - 0.03));
+    deformMerged(parts, inner, dr, metalGrey, 'trdoor' + L);
+    for (const s of [-1, 1]) registerDeform(parts, roundedDense(0.03, 0.6, L * 0.45, 0.01, 0.4), paintMat('#b9bcbf', 0.2, 0.5), s * (W / 2 - 0.04), B + 0.85, L * 0.02, inner);
+    mergedPart(inner, [boxAt(W - 0.3, 0.05, 0.02, 0, bot + 0.05, -L / 2 - 0.06), ...[-1, 1].map((s) => boxAt(0.02, 0.05, L - 0.8, s * (W / 2 + 0.045), bot + 0.02, 0))], tapeMat);
+    mergedPart(inner, [-1, 1].flatMap((s) => [-0.3, 0.1, 0.5].map((f) => boxAt(0.02, 0.05, 0.09, s * (W / 2 + 0.05), bot + 0.25, L * f))), amberMat);
   } else {
-    const g = new THREE.CylinderGeometry(1.2, 1.2, L - 0.4, 28, 22); g.rotateX(Math.PI / 2); g.scale(1, 0.88, 1);
-    g.deleteAttribute('uv'); const tg = BGU.mergeVertices(g, 1e-5); tg.computeVertexNormals();
-    registerDeform(parts, tg, paintMat('#c9ced3', 0.92, 0.22), 0, B + 2.25, 0, inner);
+    const tg = cachedGeo('tank' + L, () => { const g = new THREE.CylinderGeometry(1.2, 1.2, L - 0.4, 28, 22); g.rotateX(Math.PI / 2); g.scale(1, 0.88, 1);
+      g.deleteAttribute('uv'); const m = BGU.mergeVertices(g, 1e-5); m.computeVertexNormals(); return m; });
+    const tankPaint = paintMat('#c9ced3', 0.92, 0.22);
+    registerDeform(parts, tg, tankPaint, 0, B + 2.25, 0, inner);
+    // domed end caps and the bands that ring the barrel (all dent with the tank)
+    for (const e of [-1, 1]) { const cg = cachedGeo('tkcap' + e, () => { const cap = new THREE.SphereGeometry(1.2, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2); cap.rotateX(e * Math.PI / 2); cap.scale(1, 0.88, 0.28); cap.deleteAttribute('uv'); const g = BGU.mergeVertices(cap, 1e-5); g.computeVertexNormals(); return g; }); registerDeform(parts, cg, tankPaint, 0, B + 2.25, e * (L / 2 - 0.2), inner); }
+    deformMerged(parts, inner, () => [-0.36, -0.12, 0.12, 0.36].map((f) => new THREE.TorusGeometry(1.215, 0.035, 6, 32).scale(1, 0.88, 1).translate(0, B + 2.25, L * f)), chrome, 'tkband' + L);
+    // rear ladder, valve cabinet and hose tubes underneath, rear bumper tape
+    const lad = []; for (const x of [-0.22, 0.22]) lad.push(boxAt(0.04, 2.6, 0.04, x, B + 2.0, -L / 2 - 0.12)); for (let y = B + 1.0; y < B + 3.2; y += 0.3) lad.push(boxAt(0.46, 0.03, 0.03, 0, y, -L / 2 - 0.12));
+    mergedPart(inner, lad, metalGrey).userData.breakable = true;
+    part(inner, new THREE.BoxGeometry(1.4, 0.45, 1.4), metalGrey, 0, B + 0.95, -0.6);
+    for (const s of [-1, 1]) part(inner, new THREE.CylinderGeometry(0.07, 0.07, L * 0.55, 10), trimMat, s * 0.9, B + 0.95, 0.3).rotation.x = Math.PI / 2;
+    mergedPart(inner, [boxAt(W - 0.4, 0.05, 0.02, 0, B + 0.7, -L / 2 - 0.02)], tapeMat);
     const hz = canvasTex(64, 64, (gg) => { gg.translate(32, 32); gg.rotate(Math.PI / 4); gg.fillStyle = '#c8261a'; gg.fillRect(-21, -21, 42, 42); gg.setTransform(1, 0, 0, 1, 0, 0); gg.fillStyle = '#fff'; gg.font = 'bold 13px Arial'; gg.textAlign = 'center'; gg.fillText('1203', 32, 37); }); hz.userData.perVehicle = true;
     for (const s of [-1, 1]) part(inner, new THREE.PlaneGeometry(0.4, 0.4), new THREE.MeshStandardMaterial({ map: hz, transparent: true, alphaTest: 0.4 }), s * 1.23, B + 2.0, -L / 2 + 0.8).rotation.y = s * Math.PI / 2;
     part(inner, new THREE.BoxGeometry(0.5, 0.08, L - 1), metalGrey, 0, B + 3.35, 0);
@@ -1889,6 +1984,8 @@ function buildTrailer(tank, t, parts, inner) {
   parts.tailMat = tailMat;
   for (const sx of [-1, 1]) { const tl = part(inner, new RoundedBoxGeometry(0.3, 0.14, 0.08, 2, 0.03), tailMat, sx * W * 0.42, B + 1.1, -L / 2 - 0.02); parts.tails.push(tl); }
   for (const s of [-1, 1]) for (const az of [-L / 2 + 2.55, -L / 2 + 1.3]) makeWheel(parts, inner, s * (W / 2 - 0.32), B + 0.52, az, 0.52, 0.28, false, true);
+  mudFlaps(inner, W, B + 0.38, [-L / 2 + 0.6]);
+  part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0.6, B + 0.85, -L / 2 - 0.03).rotation.y = Math.PI;
 }
 function buildVehicle(type, colour, isPlayer = false) {
   const t = isPlayer ? PT : TYPES[type];
@@ -1989,7 +2086,7 @@ function dent(veh, pointW, dirInW, depth, radius) {
     const side = Math.sign(o.position.x - _lp.x) || 1;
     o.rotation.y += side * push * 0.5; o.rotation.z += (hash3(o.position.x, o.position.y, o.position.z) - 0.5) * push * 0.6;
     o.userData.crush = (o.userData.crush || 0) + push;
-    if (o.userData.crush > 0.17 && (Math.abs(o.position.z) > endZ || o === veh.parts.mirrors?.left || o === veh.parts.mirrors?.right)) {
+    if (o.userData.crush > 0.17 && (Math.abs(o.position.z) > endZ || o.userData.breakable || o === veh.parts.mirrors?.left || o === veh.parts.mirrors?.right)) {
       if (veh.parts.heads.includes(o) || veh.parts.tails.includes(o)) burst(pointW, 4, null, 3, 'glass');
       detach(veh, o, _dOut.copy(dirInW).negate(), 2.5);
     }
@@ -5031,7 +5128,7 @@ audioInit(); // starts suspended until the player's first touch or key (browser 
 requestAnimationFrame(frame);
 
 // Hook for automated testing
-window.__hsxTest = { CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); updateLeaks(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, fxPass, dofPass, fxState, lampPool, blobMesh, get lampN() { return lampN; }, get blobN() { return blobN; }, get puddleN() { return puddles.filter((m) => m && m.visible).length; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
+window.__hsxTest = { buildVehicle, CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); updateLeaks(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, fxPass, dofPass, fxState, lampPool, blobMesh, get lampN() { return lampN; }, get blobN() { return blobN; }, get puddleN() { return puddles.filter((m) => m && m.visible).length; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
 </script>
 
 </body>
