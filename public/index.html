@@ -1777,6 +1777,7 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
    separate meshes, one wheel (front left, centred on its hub), a colour texture and a paint/gloss mask so traffic can
    be resprayed. Made from 3D models (Meshy, CC BY 4.0) by tools in the repo: see models/README. */
 const MODELS = {};
+const MODEL_SCALE = { estate: [1.13, 1.1, 1.02] };
 async function loadModels() {
   for (const name of ['estate']) {
     try {
@@ -1797,9 +1798,15 @@ async function loadModels() {
         g.computeBoundingSphere(); SHARED_GEO.add(g); return g;
       };
       const img = async (i, srgb) => { const bm = await createImageBitmap(new Blob([blob(i, Uint8Array)], { type: 'image/jpeg' }), { imageOrientation: 'none' }); const t = new THREE.Texture(bm); t.flipY = false; t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = 4; t.needsUpdate = true; return t; };
+      // the files were fitted to the car box including mirrors and roof rails, which left the body itself narrow, low
+      // and small-wheeled next to the other cars; scale it so the body and wheels match them
+      const SC = MODEL_SCALE[name] || [1, 1, 1], scl = (g) => { g.scale(SC[0], SC[1], SC[2]); g.computeBoundingSphere(); return g; };
+      H.parts.forEach((p) => { p.pivot = p.pivot.map((v, i) => v * SC[i]); });
+      H.wheels.forEach((w) => { w.x *= SC[0]; w.y *= SC[1]; w.z *= SC[2]; });
+      H.r *= SC[1];
       MODELS[name] = {
-        parts: H.parts.map((p) => ({ ...p, geo: geo(p.geo) })),
-        wheels: H.wheels.map((w) => ({ ...w, geo: geo(w.geo) })),
+        parts: H.parts.map((p) => ({ ...p, geo: scl(geo(p.geo)) })),
+        wheels: H.wheels.map((w) => ({ ...w, geo: scl(geo(w.geo)) })),
         r: H.r, refLum: H.refLum, tex: await img(H.tex, true), mask: await img(H.mask, false),
       };
     } catch (e) { console.warn('model', name, e); }
