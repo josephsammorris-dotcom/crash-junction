@@ -1806,6 +1806,12 @@ async function loadModels() {
       };
     } catch (e) { console.warn('model', name, e); }
   }
+  if (window.__hsxModelExt) { // test builds: say how many models arrived
+    const n = Object.keys(MODELS).length, d = document.createElement('div');
+    d.textContent = 'Models loaded: ' + n + ' of 7' + (n < 7 ? ' (' + ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer'].filter((k) => !MODELS[k]).join(', ') + ' missing)' : '');
+    d.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99;font:12px sans-serif;color:#fff;background:#000a;padding:3px 8px;border-radius:6px;pointer-events:none';
+    document.body.appendChild(d); setTimeout(() => d.remove(), 12000);
+  }
 }
 // Resprayable model paint: texels the mask marks as paint take the vehicle's colour (keeping the texture's shading);
 // paint and glass get a glossy clear coat, everything else (rubber, trim, grime) stays satin
