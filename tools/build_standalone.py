@@ -19,6 +19,8 @@ js = '<script>window.__hsxAudio={' + ','.join(f'"{k}":"{v}"' for k, v in emb.ite
 # vehicle models are fetched from models/ next to the page; --embed-models puts them inside it (for offline tests)
 models = {f.stem: base64.b64encode(f.read_bytes()).decode() for f in sorted((repo / 'public/models').glob('*.cjm'))} if '--embed-models' in sys.argv else {}
 js += '<script>window.__hsxModels={' + ','.join(f'"{k}":"{v}"' for k, v in models.items()) + '};</script>\n'
+ext = next((a.split('=', 1)[1] for a in sys.argv if a.startswith('--model-ext=')), '')
+if ext: js += '<script>window.__hsxModelExt="' + ext + '";</script>\n'   # models served as separate files under this extension (the Artifact tool only takes web media types)
 i = src.index('<script type="importmap">')
 out = src[:i] + js + src[i:]
 args = [a for a in sys.argv[1:] if not a.startswith('--')]

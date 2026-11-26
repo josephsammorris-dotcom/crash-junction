@@ -1774,12 +1774,12 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
 const MODELS = {};
 const MODEL_SCALE = { estate: [1.13, 1.1, 1.03] };
 async function loadModels() {
-  for (const name of ['estate', 'fastback', 'coupe']) {
+  for (const name of ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer']) {
     try {
       let buf;
       const emb = window.__hsxModels && window.__hsxModels[name];
       if (emb) { const b = atob(emb), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); buf = u.buffer; }
-      else { const r = await fetch(new URL('models/' + name + '.cjm', document.baseURI)); if (!r.ok) continue; buf = await r.arrayBuffer(); }
+      else { const r = await fetch(new URL('models/' + name + (window.__hsxModelExt || '.cjm'), document.baseURI)); if (!r.ok) continue; buf = await r.arrayBuffer(); }
       const dv = new DataView(buf); if (dv.getUint32(0, true) !== 0x324d4a43) continue; // 'CJM2'
       const jl = dv.getUint32(4, true), H = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, jl))), base = 8 + jl;
       const blob = (i, T) => { const [o, n] = H.blobs[i]; return new T(buf.slice(base + o, base + o + n)); };
@@ -1797,12 +1797,12 @@ async function loadModels() {
       // and small-wheeled next to the other cars; scale it so the body and wheels match them
       const SC = MODEL_SCALE[name] || [1, 1, 1], scl = (g) => { g.scale(SC[0], SC[1], SC[2]); g.computeBoundingSphere(); return g; };
       H.parts.forEach((p) => { p.pivot = p.pivot.map((v, i) => v * SC[i]); });
-      H.wheels.forEach((w) => { w.x *= SC[0]; w.y *= SC[1]; w.z *= SC[2]; });
+      H.wheels.forEach((w) => { w.x *= SC[0]; w.y *= SC[1]; w.z *= SC[2]; if (w.r) w.r *= SC[1]; });
       H.r *= SC[1];
       MODELS[name] = {
         parts: H.parts.map((p) => ({ ...p, geo: scl(geo(p.geo)) })),
         wheels: H.wheels.map((w) => ({ ...w, geo: scl(geo(w.geo)) })),
-        r: H.r, refLum: H.refLum, cab: H.cab, tex: await img(H.tex, true), mask: await img(H.mask, false),
+        r: H.r, refLum: H.refLum, cab: H.cab, busSeats: H.busSeats, rigSeats: H.rigSeats, tex: await img(H.tex, true), mask: await img(H.mask, false),
       };
     } catch (e) { console.warn('model', name, e); }
   }
@@ -1863,7 +1863,8 @@ function buildModelCar(name, colour, t, parts, inner) {
     } else if (p.kind === 'rigid') {
       const m = part(inner, p.geo, mat, 0, B, 0); centrePart(m);
       if (p.name === 'bumpF') parts.bumpF = m; else if (p.name === 'bumpR') parts.bumpR = m;
-      else { m.userData.breakable = true; (parts.mirrors ||= {})[p.name === 'mirrorL' ? 'left' : 'right'] = m; }
+      else if (p.name.startsWith('mirror')) { m.userData.breakable = true; (parts.mirrors ||= {})[p.name === 'mirrorL' ? 'left' : 'right'] = m; }
+      else m.userData.breakable = true;
       if (p.name.startsWith('bump')) m.userData.melts = true;
     } else if (p.kind === 'inner') { // the back of a door, bonnet, tailgate or its window: rides on the panel
       const h = piv[p.owner]; if (!h) continue; const m = new THREE.Mesh(p.geo, cavityMat); m.receiveShadow = true; h.mesh.add(m);
@@ -1873,15 +1874,19 @@ function buildModelCar(name, colour, t, parts, inner) {
     }
   }
   // a simple cabin: lined walls and seats behind the glass
-  const cab = M.cab || { belt: 0.9, roof: 1.4, zf0: 0.86, zf1: 0.3, zr0: -2.15, zr1: -2.05, wb: 0.86, wt: 0.8 };
-  if (!window.__noInterior) carInterior(inner, B, cab, t.W, false);
-  parts.cab = { c: cab, B, cz: 0, W: t.W, pillars: false, seats: [-0.1, -0.95] };
+  if (name === 'estate' || M.cab) {
+    const cab = M.cab || { belt: 0.9, roof: 1.4, zf0: 0.86, zf1: 0.3, zr0: -2.15, zr1: -2.05, wb: 0.86, wt: 0.8 };
+    if (!window.__noInterior) carInterior(inner, B, cab, t.W, false);
+    parts.cab = { c: cab, B, cz: 0, W: t.W, pillars: false, seats: [-0.1, -0.95] };
+  }
+  if (M.busSeats) parts.busSeats = { ...M.busSeats, B, W: t.W };
+  if (M.rigSeats) parts.rigSeats = { z: M.rigSeats.z, y: B + M.rigSeats.y, W: t.W };
   for (const w of M.wheels) {
     const pivot = new THREE.Group(); pivot.position.set(w.x, B + w.y, w.z); inner.add(pivot);
     const spin = new THREE.Group(); pivot.add(spin);
     const wm = new THREE.Mesh(w.geo, mat); wm.castShadow = true; spin.add(wm);
-    pivot.userData.r = M.r;
-    parts.wheels.push({ mesh: pivot, spin, side: w.side, z: w.z, r: M.r, front: w.front });
+    pivot.userData.r = w.r || M.r;
+    parts.wheels.push({ mesh: pivot, spin, side: w.side, z: w.z, r: w.r || M.r, front: w.front });
   }
   if (window.__dbgParts) { const C = { body: '#c03030', panel: '#30c030', glass: '#3060ff', rigid: '#e0d020', lamp: '#ffffff', cavity: '#ff00ff' };
     const kindOf = new Map(); for (const p of M.parts) kindOf.set(p.geo.uuid, p.kind);
@@ -2095,6 +2100,8 @@ function mudFlaps(inner, W, y, zs) { const g = []; for (const z of zs) for (cons
 const amberMat = new THREE.MeshStandardMaterial({ color: '#7a4304', emissive: '#ff8a10', emissiveIntensity: 0.35, roughness: 0.2 });
 const tapeMat = new THREE.MeshStandardMaterial({ color: '#b0201a', roughness: 0.3, metalness: 0.2, emissive: '#400', emissiveIntensity: 0.2 });
 function buildTruck(type, colour, t, parts, inner) {
+  const mdl = { van: 'boxtruck', bus: 'bus', lorry: 'hauler_tractor' }[type];
+  if (mdl && buildModelCar(mdl, colour, t, parts, inner)) return;
   const L = t.L, W = t.W, H = t.H, B = -t.H / 2;
   if (type === 'van') {
     // cab-over-chassis box truck
