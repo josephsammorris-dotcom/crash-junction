@@ -1774,7 +1774,7 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
 const MODELS = {};
 const MODEL_SCALE = { estate: [1.13, 1.1, 1.03] };
 async function loadModels() {
-  for (const name of ['estate']) {
+  for (const name of ['estate', 'fastback', 'coupe']) {
     try {
       let buf;
       const emb = window.__hsxModels && window.__hsxModels[name];
@@ -1802,7 +1802,7 @@ async function loadModels() {
       MODELS[name] = {
         parts: H.parts.map((p) => ({ ...p, geo: scl(geo(p.geo)) })),
         wheels: H.wheels.map((w) => ({ ...w, geo: scl(geo(w.geo)) })),
-        r: H.r, refLum: H.refLum, tex: await img(H.tex, true), mask: await img(H.mask, false),
+        r: H.r, refLum: H.refLum, cab: H.cab, tex: await img(H.tex, true), mask: await img(H.mask, false),
       };
     } catch (e) { console.warn('model', name, e); }
   }
@@ -1850,8 +1850,8 @@ function buildModelCar(name, colour, t, parts, inner) {
       const h = hinge(p); h.mesh = keep(registerDeform(parts, p.geo.clone(), mat, 0, 0, 0, h.g));
       if (p.name.startsWith('door')) {
         const sd = p.name[4] === 'L' ? 1 : -1, zone = (sd > 0 ? 'left' : 'right') + (p.name.endsWith('2') ? '2' : '');
-        const z1 = p.pivot[2], z0 = p.name.endsWith('2') ? -0.94 : -0.06;
-        parts.doors[zone] = { pivot: h.g, mesh: h.mesh, side: sd, z0, z1, y0: 0.25, y1: 0.95 };
+        const z1 = p.pivot[2], z0 = p.z0 ?? (p.name.endsWith('2') ? -0.94 : -0.06);
+        parts.doors[zone] = { pivot: h.g, mesh: h.mesh, side: sd, z0, z1, y0: p.y0 ?? 0.25, y1: p.y1 ?? 0.95 };
       } else if (p.name === 'bonnet') parts.bonnet = { pivot: h.g, mesh: h.mesh };
       else if (p.name === 'tailgate') parts.boot = { pivot: h.g, mesh: h.mesh };
     } else if (p.kind === 'cavity') { if (window.__noCavity) continue; const m = new THREE.Mesh(p.geo, cavityMat); m.position.y = B; m.receiveShadow = true; inner.add(m); }
@@ -1873,7 +1873,7 @@ function buildModelCar(name, colour, t, parts, inner) {
     }
   }
   // a simple cabin: lined walls and seats behind the glass
-  const cab = { belt: 0.9, roof: 1.4, zf0: 0.86, zf1: 0.3, zr0: -2.15, zr1: -2.05, wb: 0.86, wt: 0.8 };
+  const cab = M.cab || { belt: 0.9, roof: 1.4, zf0: 0.86, zf1: 0.3, zr0: -2.15, zr1: -2.05, wb: 0.86, wt: 0.8 };
   if (!window.__noInterior) carInterior(inner, B, cab, t.W, false);
   parts.cab = { c: cab, B, cz: 0, W: t.W, pillars: false, seats: [-0.1, -0.95] };
   for (const w of M.wheels) {
@@ -1898,7 +1898,7 @@ function centrePart(m) {
 }
 function buildCar(type, colour, isPlayer, t, parts, inner) {
   const variant = isPlayer || type === 'pickup' ? 0 : BUILD.variant;
-  if (!isPlayer && type === 'car' && variant === 2 && buildModelCar('estate', colour, t, parts, inner)) return;
+  if (!isPlayer && type === 'car' && buildModelCar(['coupe', 'fastback', 'estate'][variant], colour, t, parts, inner)) return;
   const P = isPlayer ? PROFILES.car : type === 'pickup' ? PROFILES.pickup : CAR_STYLES[variant];
   const PO = P.o || {};
   const L = t.L, W = t.W, B = -t.H / 2;
