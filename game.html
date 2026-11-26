@@ -366,6 +366,7 @@ body.padmode .kb-only, body.padmode .tk-only { display: none; } body.padmode .pa
   <label class="check" for="tuneRumble"><input type="checkbox" id="tuneRumble" checked> Controller rumble</label>
   <label class="check" for="tuneDebug"><input type="checkbox" id="tuneDebug"> Show debug stats</label>
   <p class="small">Sound effects: Stunt Rally 3, SuperTuxKart, OpenSFX and 0 A.D. (Wildfire Games) contributors, and freesound.org recordings by Halleck, audible-edge, han1, patchen, Daniel Simion and others (CC BY / CC BY-SA / CC0). Full list in audio/CREDITS.md.</p>
+  <p class="small">Vehicle models made with Meshy (CC BY 4.0).</p>
 </div>
 <button class="finish-btn" id="backBtn" hidden>Results <kbd class="kb">Enter</kbd><kbd class="pad">B</kbd></button>
 
@@ -1757,8 +1758,107 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
   part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + 0.48, fz + 0.165);
   part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0, B + 0.58, rz - 0.15).rotation.y = Math.PI;
 }
+/* ------------------------------------------------------------------ imported vehicle models
+   A model file ('CJM1'): a JSON header then packed arrays: per level of detail the body, bumpers and mirrors as
+   separate meshes, one wheel (front left, centred on its hub), a colour texture and a paint/gloss mask so traffic can
+   be resprayed. Made from 3D models (Meshy, CC BY 4.0) by tools in the repo: see models/README. */
+const MODELS = {};
+async function loadModels() {
+  for (const name of ['estate']) {
+    try {
+      let buf;
+      const emb = window.__hsxModels && window.__hsxModels[name];
+      if (emb) { const b = atob(emb), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); buf = u.buffer; }
+      else { const r = await fetch(new URL('models/' + name + '.cjm', document.baseURI)); if (!r.ok) continue; buf = await r.arrayBuffer(); }
+      const dv = new DataView(buf); if (dv.getUint32(0, true) !== 0x314d4a43) continue;
+      const jl = dv.getUint32(4, true), H = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, jl))), base = 8 + jl;
+      const blob = (i, T) => { const [o, n] = H.blobs[i]; return new T(buf.slice(base + o, base + o + n)); };
+      const geo = (d) => {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(blob(d.pos, Float32Array), 3));
+        g.setAttribute('normal', new THREE.BufferAttribute(blob(d.nrm, Float32Array), 3));
+        g.setAttribute('uv', new THREE.BufferAttribute(blob(d.uv, Float32Array), 2));
+        g.setIndex(new THREE.BufferAttribute(blob(d.idx, d.big ? Uint32Array : Uint16Array), 1));
+        g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3).fill(1), 3)); // the material tints by vertex colour (dirt, dents)
+        g.computeBoundingSphere(); return g;
+      };
+      const img = async (i, srgb) => { const bm = await createImageBitmap(new Blob([blob(i, Uint8Array)], { type: 'image/jpeg' }), { imageOrientation: 'none' }); const t = new THREE.Texture(bm); t.flipY = false; t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = 4; t.needsUpdate = true; return t; };
+      MODELS[name] = {
+        lods: H.lods.map((l) => ({ parts: Object.fromEntries(Object.entries(l.parts).map(([k, d]) => [k, geo(d)])), wheel: geo(l.wheel) })),
+        wheels: H.wheels, r: H.r, refLum: H.refLum, tex: await img(H.tex, true), mask: await img(H.mask, false),
+      };
+      for (const l of MODELS[name].lods) { for (const g of Object.values(l.parts)) SHARED_GEO.add(g); SHARED_GEO.add(l.wheel); }
+    } catch (e) { console.warn('model', name, e); }
+  }
+}
+// Resprayable model paint: texels the mask marks as paint take the vehicle's colour (keeping the texture's shading);
+// paint and glass get a glossy clear coat, everything else (rubber, trim, grime) stays satin
+const modelMats = new Map();
+function modelMat(M, colour) {
+  const key = M.tex.uuid + colour;
+  if (modelMats.has(key)) return modelMats.get(key);
+  const m = new THREE.MeshPhysicalMaterial({ map: M.tex, vertexColors: true, roughness: 0.6, metalness: 0.15, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.3 });
+  m.userData.base = new THREE.Color(1, 1, 1);
+  const paint = new THREE.Color(colour), refLin = Math.pow(M.refLum, 2.2);
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uMask = { value: M.mask }; sh.uniforms.uPaint = { value: paint }; sh.uniforms.uRef = { value: refLin };
+    sh.fragmentShader = 'uniform sampler2D uMask; uniform vec3 uPaint; uniform float uRef;\n' + sh.fragmentShader
+      .replace('#include <map_fragment>', `#include <map_fragment>
+  vec3 mk = texture2D(uMask, vMapUv).rgb; float pm = mk.r, gm = max(mk.r, mk.g);
+  float lm = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+  diffuseColor.rgb = mix(diffuseColor.rgb, uPaint * clamp(lm / uRef, 0.25, 1.8), pm);`)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(mix(roughnessFactor, 0.34, mk.g), 0.24, pm);')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = mix(metalnessFactor, 0.3 * pm, gm);')
+      .replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\n  material.clearcoat *= max(pm, 0.35 * mk.g);');
+  };
+  m.customProgramCacheKey = () => 'cjmodel';
+  modelMats.set(key, m); return m;
+}
+// A traffic car built from an imported model; returns false if the model isn't loaded (the procedural body is used)
+function buildModelCar(name, colour, t, parts, inner) {
+  const M = MODELS[name]; if (!M) return false;
+  const B = -t.H / 2, mat = modelMat(M, colour);
+  parts.lodMeshes = [[], []];
+  M.lods.forEach((l, li) => {
+    const body = registerDeform(parts, l.parts.body.clone(), mat, 0, B, 0, inner);
+    body.userData.keepNormals = l.parts.body.attributes.normal.array.slice(); body.userData.lod = true;
+    if (li === 0) parts.hull = body;
+    parts.lodMeshes[li].push(body);
+  });
+  // bumpers and mirrors are separate so they crumple with the body and tear off (one level of detail is enough)
+  const L0 = M.lods[0].parts;
+  parts.bumpF = part(inner, L0.bumpF, mat, 0, B, 0); parts.bumpR = part(inner, L0.bumpR, mat, 0, B, 0);
+  parts.bumpF.userData.melts = parts.bumpR.userData.melts = true;
+  centrePart(parts.bumpF); centrePart(parts.bumpR);
+  parts.mirrors = {};
+  for (const [k, z] of [['mirrorL', 'left'], ['mirrorR', 'right']]) if (L0[k] && L0[k].index.count) { const mm = part(inner, L0[k], mat, 0, B, 0); centrePart(mm); mm.userData.breakable = true; parts.mirrors[z] = mm; }
+  // lamps: markers only (the lamps are painted on the model); they place the brake glow and register lamp damage
+  const zf = t.L / 2, zr = -t.L / 2;
+  for (const sx of [-1, 1]) {
+    const h = new THREE.Object3D(); h.position.set(sx * 0.6, B + 0.66, zf - 0.08); inner.add(h); parts.heads.push(h);
+    const tl = new THREE.Object3D(); tl.position.set(sx * 0.66, B + 0.86, zr + 0.06); inner.add(tl); parts.tails.push(tl);
+  }
+  newTailMat(parts);
+  // wheels: the model's own wheel, mirrored for the right-hand side, spinning on its hub
+  for (const w of M.wheels) {
+    const pivot = new THREE.Group(); pivot.position.set(w.x, B + w.y, w.z); inner.add(pivot);
+    const spin = new THREE.Group(); pivot.add(spin);
+    M.lods.forEach((l, li) => { const wm = new THREE.Mesh(l.wheel, mat); wm.castShadow = true; if (w.side < 0) wm.scale.x = -1; spin.add(wm); parts.lodMeshes[li].push(wm); });
+    pivot.userData.r = M.r;
+    parts.wheels.push({ mesh: pivot, spin, side: w.side, z: w.z, r: M.r, front: w.front });
+  }
+  for (const m of parts.lodMeshes[1]) m.visible = false;
+  parts.plastic = true;
+  return true;
+}
+// re-centre a part's geometry on its own middle, so it pivots and flies off around itself when torn away
+function centrePart(m) {
+  const g = m.geometry = m.geometry.clone(); g.computeBoundingBox(); const c = g.boundingBox.getCenter(new THREE.Vector3());
+  g.translate(-c.x, -c.y, -c.z); m.position.add(c); g.computeBoundingSphere();
+}
 function buildCar(type, colour, isPlayer, t, parts, inner) {
   const variant = isPlayer || type === 'pickup' ? 0 : BUILD.variant;
+  if (!isPlayer && type === 'car' && variant === 2 && buildModelCar('estate', colour, t, parts, inner)) return;
   const P = isPlayer ? PROFILES.car : type === 'pickup' ? PROFILES.pickup : CAR_STYLES[variant];
   const PO = P.o || {};
   const L = t.L, W = t.W, B = -t.H / 2;
@@ -2172,7 +2272,18 @@ function spinWheels(v, dt, steer) {
 /* ------------------------------------------------------------------ denting */
 const _lp = new THREE.Vector3(), _ld = new THREE.Vector3(), _wq = new THREE.Quaternion();
 const dirtyNormals = new Set();
-function flushNormals() { for (const g of dirtyNormals) { g.computeVertexNormals(); g.computeBoundingSphere(); } dirtyNormals.clear(); }
+function flushNormals() {
+  for (const g of dirtyNormals) {
+    const keep = g.userData.keepNormals;
+    if (keep) { // copy the model's own normals back wherever the panel hasn't moved
+      const n0 = keep.slice(), pos = g.attributes.position.array, o = g.userData.orig;
+      g.computeVertexNormals(); const n = g.attributes.normal.array;
+      for (let i = 0; i < pos.length; i += 3) if (Math.abs(pos[i] - o[i]) + Math.abs(pos[i + 1] - o[i + 1]) + Math.abs(pos[i + 2] - o[i + 2]) < 0.004) { n[i] = n0[i]; n[i + 1] = n0[i + 1]; n[i + 2] = n0[i + 2]; }
+    } else g.computeVertexNormals();
+    g.computeBoundingSphere();
+  }
+  dirtyNormals.clear();
+}
 function hash3(x, y, z) { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453; return s - Math.floor(s); }
 // Push the panel vertices near the impact point into the body, with a soft falloff and a little crinkle,
 // and scrape the paint so creases read as torn, buckled metal.
@@ -2182,7 +2293,7 @@ function dent(veh, pointW, dirInW, depth, radius) {
   veh.group.quaternion.copy(veh.body.quaternion);
   veh.group.updateMatrixWorld(true);
   for (const m of veh.parts.deform) {
-    if (!m.visible || !m.parent || m.userData.off) continue;
+    if ((!m.visible && !m.userData.lod) || !m.parent || m.userData.off) continue;
     _lp.copy(pointW); m.worldToLocal(_lp);
     if (m.userData.bb.distanceToPoint(_lp) > radius) continue;
     m.getWorldQuaternion(_wq).invert();
@@ -2213,7 +2324,7 @@ function dent(veh, pointW, dirInW, depth, radius) {
       col.array[k] += (tgt.r - col.array[k]) * tt; col.array[k + 1] += (tgt.g - col.array[k + 1]) * tt; col.array[k + 2] += (tgt.b - col.array[k + 2]) * tt;
       touched = true;
     }
-    if (touched) { pos.needsUpdate = true; col.needsUpdate = true; dirtyNormals.add(m.geometry); }
+    if (touched) { pos.needsUpdate = true; col.needsUpdate = true; if (m.userData.keepNormals) { m.geometry.userData.keepNormals = m.userData.keepNormals; m.geometry.userData.orig = m.userData.orig; } dirtyNormals.add(m.geometry); }
   }
   const inner = veh.inner; if (!inner) return;
   _lp.copy(pointW); inner.worldToLocal(_lp);
@@ -4995,6 +5106,7 @@ function setDetail(parts, d2) {
   if (want === parts.lodNear) return;
   parts.lodNear = want;
   for (const o of parts.detailRef || []) if (!o.userData.off) o.visible = want;
+  if (parts.lodMeshes) { for (const o of parts.lodMeshes[0]) o.visible = want; for (const o of parts.lodMeshes[1]) o.visible = !want; }
 }
 function syncMeshes(a = 1) {
   flushNormals();
@@ -5259,6 +5371,7 @@ $('#tuneSlow').addEventListener('change', (e) => { CFG.blur = e.target.checked; 
 $('#tuneDebug').addEventListener('change', (e) => { $('#debug').hidden = !e.target.checked; });
 
 // Idle scene behind the start card: traffic flowing through the junction
+await loadModels();
 buildRun();
 let idleOn = false;
 function idle() {

@@ -16,7 +16,11 @@ for f in sorted((repo / 'public/audio').iterdir()):
             data = o.read_bytes()
         emb[f.stem] = base64.b64encode(data).decode()
 js = '<script>window.__hsxAudio={' + ','.join(f'"{k}":"{v}"' for k, v in emb.items()) + '};</script>\n'
+# vehicle models are fetched from models/ next to the page; --embed-models puts them inside it (for offline tests)
+models = {f.stem: base64.b64encode(f.read_bytes()).decode() for f in sorted((repo / 'public/models').glob('*.cjm'))} if '--embed-models' in sys.argv else {}
+js += '<script>window.__hsxModels={' + ','.join(f'"{k}":"{v}"' for k, v in models.items()) + '};</script>\n'
 i = src.index('<script type="importmap">')
 out = src[:i] + js + src[i:]
-dest = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'crash-junction-standalone.html'); dest.write_text(out)
+args = [a for a in sys.argv[1:] if not a.startswith('--')]
+dest = pathlib.Path(args[0] if args else 'crash-junction-standalone.html'); dest.write_text(out)
 print('artifact build', len(out) // 1024, 'KB with', len(emb), 'sounds')
