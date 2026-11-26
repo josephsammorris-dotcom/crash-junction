@@ -514,7 +514,7 @@ const CFG = {
   steerRate: 1.15,
   damageScale: 1, trafficScale: 1, grip: 1, punch: 3, notice: 1.2, blur: true, dof: true, rumble: true, warm: 40,
 };
-const MEDALS = { bronze: 3000000, silver: 6000000, gold: 11000000 }; // retuned for the physics rework (driver tests: best runs $11.4M and $12.3M)
+const MEDALS = { bronze: 2000000, silver: 4000000, gold: 6000000 }; // retuned for per-style car sizes (driver tests: best $6.3M, typical $3.5-4.9M)
 const fmt = (n) => '$' + Math.round(n).toLocaleString('en-US');
 const fmtShort = (n) => n >= 1e6 ? '$' + (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : '$' + Math.round(n / 1000) + 'K';
 $('#tBronze').textContent = fmtShort(MEDALS.bronze);
@@ -533,6 +533,15 @@ const TYPES = {
   lorry:  { L: 6.2,  W: 2.6,  H: 3.6,  mass: 8000,  value: 175000, label: 'Semi', trailer: { L: 9.4, W: 2.6, H: 4.1, mass: 10000, label: 'Semi' } },
   tanker: { L: 6.2,  W: 2.6,  H: 3.6,  mass: 8000,  value: 260000, label: 'Fuel tanker', trailer: { L: 9.4, W: 2.6, H: 3.6, mass: 15000, label: 'Fuel tanker', tank: true } },
 };
+// Traffic cars come in three bodies with their own sizes and weights: a small two-door notchback, a smaller
+// three-door fastback and a big five-door estate. Which one a car is depends only on its lane and number, so
+// replays rebuild the same traffic.
+const CAR_T = [
+  { ...TYPES.car, L: 4.5, W: 1.74, H: 1.42, mass: 1200, label: 'Coupe', variant: 0 },
+  { ...TYPES.car, L: 4.4, W: 1.72, H: 1.36, mass: 1150, label: 'Fastback', variant: 1 },
+  { ...TYPES.car, L: 4.95, W: 1.86, H: 1.52, mass: 1500, label: 'Estate', variant: 2 },
+];
+function typeT(type, lane, idx) { return type === 'car' ? CAR_T[Math.floor(rng(idx * 104729 + lane.id.charCodeAt(0) * 31 + 7)() * 3)] : TYPES[type]; }
 const CAR_COLOURS = ['#B9BDC2', '#16181C', '#ECEEEF', '#6E1018', '#1E3760', '#555B62', '#9E2219', '#2C4434', '#C9B48E', '#335F8E', '#7D7F82', '#8A5A2E'];
 
 /* ------------------------------------------------------------------ geometry of the junction */
@@ -1777,7 +1786,7 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
    separate meshes, one wheel (front left, centred on its hub), a colour texture and a paint/gloss mask so traffic can
    be resprayed. Made from 3D models (Meshy, CC BY 4.0) by tools in the repo: see models/README. */
 const MODELS = {};
-const MODEL_SCALE = { estate: [1.13, 1.1, 1.02] };
+const MODEL_SCALE = { estate: [1.13, 1.1, 1.03] };
 async function loadModels() {
   for (const name of ['estate']) {
     try {
@@ -2275,11 +2284,12 @@ function buildTrailer(tank, t, parts, inner) {
   mudFlaps(inner, W, B + 0.38, [-L / 2 + 0.6]);
   part(inner, new THREE.BoxGeometry(0.32, 0.16, 0.02), plateMat, 0.6, B + 0.85, -L / 2 - 0.03).rotation.y = Math.PI;
 }
-function buildVehicle(type, colour, isPlayer = false) {
-  const t = isPlayer ? PT : TYPES[type];
+function buildVehicle(type, colour, isPlayer = false, tOv = null) {
+  let t = isPlayer ? PT : tOv || TYPES[type];
+  if (!isPlayer && type === 'car' && !tOv) t = CAR_T[(Math.random() * 3) | 0];
   const mk = () => { const outer = new THREE.Group(), inner = new THREE.Group(); inner.position.y = 0; outer.add(inner); return { outer, inner, parts: { deform: [], heads: [], tails: [], wheels: [], glass: [], bonnet: null, bumpF: null, bumpR: null } }; };
   const A = mk(); A.inner.position.y = t.H * COM_DROP;
-  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : (0.12 + Math.random() * 0.7) * (t.H > 2.5 ? 0.15 : 1); BUILD.variant = isPlayer || type !== 'car' ? 0 : (Math.random() * 3) | 0;
+  BUILD.B = -t.H / 2; BUILD.dirt = isPlayer ? PLAYER_DIRT : (0.12 + Math.random() * 0.7) * (t.H > 2.5 ? 0.15 : 1); BUILD.variant = isPlayer || type !== 'car' ? 0 : t.variant;
   if (isPlayer || type === 'car' || type === 'pickup') buildCar(isPlayer ? 'car' : type, colour, isPlayer, t, A.parts, A.inner);
   else buildTruck(type, colour, t, A.parts, A.inner);
   scene.add(A.outer);
@@ -2667,8 +2677,8 @@ function updateVehicleFx() {
     addBlob(v.group, v.t);
     lampsOf(v.group, v.inner, v.parts, v, cam);
   }
-  for (const gh of ghostsIn.values()) { const t = TYPES[gh.type]; if (!t) continue; ghostDetail(gh, cam); addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
-  for (const gh of ghostsOut) { const t = TYPES[gh.type]; if (!t) continue; ghostDetail(gh, cam); addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
+  for (const gh of ghostsIn.values()) { const t = gh.t || TYPES[gh.type]; if (!t) continue; ghostDetail(gh, cam); addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
+  for (const gh of ghostsOut) { const t = gh.t || TYPES[gh.type]; if (!t) continue; ghostDetail(gh, cam); addBlob(gh.built.group, t); lampsOf(gh.built.group, gh.built.inner, gh.built.parts, null, cam); if (gh.built.trailer) { addBlob(gh.built.trailer.group, t.trailer); lampsOf(gh.built.trailer.group, gh.built.trailer.inner, gh.built.trailer.parts, null, cam); } }
   if (player.veh && player.mesh && state !== 'ready') lampsOf(player.mesh, player.veh.inner, player.veh.parts, player.veh, cam);
   blobMesh.count = blobN; blobMesh.instanceMatrix.needsUpdate = true;
   for (let i = lampN; i < Math.min(900, lampN + 4); i++) lampPool.alpha[i] = 0;
@@ -2810,9 +2820,9 @@ function newVehState(t, body, built, extra) {
 }
 function vehColour(lane, idx) { return CAR_COLOURS[Math.floor(rng(idx * 7919 + lane.id.charCodeAt(0))() * CAR_COLOURS.length)]; }
 function makeVehicle(lane, type, idx, prebuilt) {
-  const t = TYPES[type];
+  const t = typeT(type, lane, idx);
   const body = makeBody(t, false);
-  const built = prebuilt || buildVehicle(type, vehColour(lane, idx));
+  const built = prebuilt || buildVehicle(type, vehColour(lane, idx), false, t);
   const v = newVehState(t, body, built, { type, lane, s: 0, v: lane.v0 * CFG.trafficScale, state: 'driven', label: t.label });
   body.addEventListener('collide', (e) => onCollide(v, e));
   world.addBody(body);
@@ -2951,14 +2961,14 @@ function updateTraffic(dt, live) {
     ls.next -= dt;
     if (ls.next <= 0) {
       const last = list.length ? list[list.length - 1] : null;
-      const type = L.pattern[ls.idx % L.pattern.length];
-      if (!last || rearS(last) > TYPES[type].L / 2 + 6) {
+      const type = L.pattern[ls.idx % L.pattern.length], nt = typeT(type, L, ls.idx);
+      if (!last || rearS(last) > nt.L / 2 + 6) {
         const v = makeVehicle(L, type, ls.idx, takeGhost(L, ls.idx));
         v.s = 0; ls.idx++; v.late = player.crashed;
         // enter no faster than lets it stop behind the last car in the queue
-        if (last) v.v = Math.min(v.v, last.v + Math.sqrt(2 * 4.5 * Math.max(0, rearS(last) - TYPES[type].L / 2 - 2.5)));
+        if (last) v.v = Math.min(v.v, last.v + Math.sqrt(2 * 4.5 * Math.max(0, rearS(last) - nt.L / 2 - 2.5)));
         placeOnPath(v);
-        ls.next = L.headway * (TYPES[type].L > 8 || TYPES[type].trailer ? 1.35 : 1) * (player.crashed ? 1.5 : 1);
+        ls.next = L.headway * (nt.L > 8 || nt.trailer ? 1.35 : 1) * (player.crashed ? 1.5 : 1);
       }
     }
   }
@@ -2983,8 +2993,8 @@ function removeVehicle(v) {
 // are cars that left the simulated stretch, carrying on to the horizon. None of this changes the simulation.
 let ghostsIn = new Map(), ghostsOut = [];
 const rigHalfBack = (t) => t.L / 2 + (t.trailer ? RIG_GAP + t.trailer.L : 0);
-function placeGhost(built, type, L, s) {
-  const t = TYPES[type];
+function placeGhost(built, type, L, s, tOv) {
+  const t = tOv || TYPES[type];
   const put = (sv, tt, grp) => { const q = laneAt(L, sv); grp.position.set(q.x, groundY(q.x, q.z) + restHeight(tt), q.z); grp.quaternion.setFromAxisAngle(Y_AXIS, Math.atan2(q.dx, q.dz)); };
   put(s, t, built.group);
   if (t.trailer && built.trailer) put(s - (t.L / 2 + RIG_GAP + t.trailer.L / 2), t.trailer, built.trailer.group);
@@ -2994,7 +3004,7 @@ function takeGhost(L, idx) { const k = L.id + ':' + idx, g = ghostsIn.get(k); if
 function retireVehicle(v) {
   const L = v.lane;
   if (v.state !== 'driven') { removeVehicle(v); return; }
-  const g = { L, s: v.s, v: v.v, type: v.type, built: { group: v.group, inner: v.inner, parts: v.parts, trailer: v.trailer ? { group: v.trailer.group, inner: v.trailer.inner, parts: v.trailer.parts } : null } };
+  const g = { L, s: v.s, v: v.v, type: v.type, t: v.t, built: { group: v.group, inner: v.inner, parts: v.parts, trailer: v.trailer ? { group: v.trailer.group, inner: v.trailer.inner, parts: v.trailer.parts } : null } };
   v.group = new THREE.Group(); if (v.trailer) v.trailer.group = new THREE.Group(); // keep the meshes; the bodies go
   removeVehicle(v); ghostsOut.push(g);
 }
@@ -3004,14 +3014,14 @@ function updateGhosts(dt) {
     const L = ls.L, v0 = L.v0 * CFG.trafficScale, maxD = L.ghostBack;
     let T = ls.next, idx = ls.idx, prev = -Infinity, prevT = null;
     for (let k = 0; k < 20; k++) {
-      const type = L.pattern[idx % L.pattern.length], t = TYPES[type];
+      const type = L.pattern[idx % L.pattern.length], t = typeT(type, L, idx);
       let d = Math.max(0, T * v0);
       if (prevT) d = Math.max(d, prev + rigHalfBack(prevT) + 6 + t.L / 2);
       if (d > maxD) break;
       const key = L.id + ':' + idx; seen.add(key);
       let g = ghostsIn.get(key);
-      if (!g) { g = { type, built: buildVehicle(type, vehColour(L, idx)) }; ghostsIn.set(key, g); }
-      placeGhost(g.built, type, L, -d);
+      if (!g) { g = { type, t, built: buildVehicle(type, vehColour(L, idx), false, t) }; ghostsIn.set(key, g); }
+      placeGhost(g.built, type, L, -d, t);
       T += L.headway * (t.L > 8 || t.trailer ? 1.35 : 1) * (player.crashed ? 1.5 : 1);
       prev = d; prevT = t; idx++;
     }
@@ -3020,7 +3030,7 @@ function updateGhosts(dt) {
   ghostsOut = ghostsOut.filter((g) => {
     g.s += g.v * dt;
     if (g.s > g.L.ghostEnd) { dropGhost(g); return false; }
-    placeGhost(g.built, g.type, g.L, g.s); return true;
+    placeGhost(g.built, g.type, g.L, g.s, g.t); return true;
   });
 }
 function clearGhosts() { for (const g of ghostsIn.values()) dropGhost(g); for (const g of ghostsOut) dropGhost(g); ghostsIn = new Map(); ghostsOut = []; }
