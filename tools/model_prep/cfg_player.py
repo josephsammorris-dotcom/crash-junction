@@ -13,7 +13,7 @@ PIVOTS = {'doorL': (0.9, 0.6, ZF), 'doorR': (-0.9, 0.6, ZF), 'bonnet': (0, 0.9, 
 OUTDIR = {'doorL': (1, 0, 0), 'doorR': (-1, 0, 0), 'bonnet': (0, 1, 0)}
 PANEL_INFO = {'doorL': dict(z0=ZR, y0=0.29, y1=0.93), 'doorR': dict(z0=ZR, y0=0.29, y1=0.93)}
 PAINT = ['body', 'doorL', 'doorR', 'bumpF', 'bumpR']
-CAB = dict(belt=0.93, roof=1.4, zf0=0.7, zf1=0.09, zr0=-1.85, zr1=-1.3, wb=0.9, wt=0.72)
+CAB = dict(belt=0.93, roof=1.4, zf0=0.7, zf1=0.09, zr0=-1.85, zr1=-1.3, wb=0.66, wt=0.72)
 CENTRE = (0, 1.1, -0.4)
 def classify(C, col, FN, sat, lum, P, I):
     x, y, z = C.T; ax = np.abs(x); G = np.full(len(I), 'body', dtype=object)
