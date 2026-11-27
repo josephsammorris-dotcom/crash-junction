@@ -1919,7 +1919,7 @@ function centrePart(m) {
   g.translate(-c.x, -c.y, -c.z); m.position.add(c); g.computeBoundingSphere();
 }
 function playerCabin(inner, B, cab, W) {
-    // ---- a proper cabin behind the glass: bucket seats, rear bench, dash, a roll cage and a helmeted driver
+    // ---- a proper cabin behind the glass: bucket seats, rear bench, dash, and a helmeted driver
     const yb = B + cab.belt, cw = W / 2 * cab.wb;
     const fab = new THREE.MeshStandardMaterial({ color: '#202124', roughness: 0.95 }), red = new THREE.MeshStandardMaterial({ color: '#a8141c', roughness: 0.6 });
     const cageMat = new THREE.MeshStandardMaterial({ color: '#c9ccd1', metalness: 0.7, roughness: 0.35 });
@@ -1939,14 +1939,6 @@ function playerCabin(inner, B, cab, W) {
     const helm = part(inner, new THREE.SphereGeometry(0.135, 20, 14), new THREE.MeshPhysicalMaterial({ color: '#f2f2ee', roughness: 0.25, clearcoat: 1 }), 0.38, yb + 0.33, -0.3);
     part(inner, new THREE.SphereGeometry(0.137, 20, 8, -Math.PI * 0.35, Math.PI * 0.7, Math.PI * 0.38, Math.PI * 0.2), new THREE.MeshStandardMaterial({ color: '#0d0e10', metalness: 0.6, roughness: 0.15 }), 0.38, yb + 0.33, -0.3);
     part(inner, new THREE.BoxGeometry(0.03, 0.03, 0.27), red, 0.38, yb + 0.44, -0.3);
-    // roll cage: main hoop behind the front seats, a diagonal, and stays back to the rear
-    const hz = -0.62, hx = cw - 0.1, top = yb + 0.43;
-    for (const sx of [-1, 1]) {
-      bar(inner, new THREE.Vector3(sx * hx, yb, hz), new THREE.Vector3(sx * (hx - 0.08), top, hz), 0.045, cageMat);
-      bar(inner, new THREE.Vector3(sx * (hx - 0.08), top, hz), new THREE.Vector3(sx * (hx - 0.02), yb + 0.03, cab.zr0 + 0.25), 0.04, cageMat);
-    }
-    bar(inner, new THREE.Vector3(-(hx - 0.08), top, hz), new THREE.Vector3(hx - 0.08, top, hz), 0.045, cageMat);
-    bar(inner, new THREE.Vector3(hx, yb, hz), new THREE.Vector3(-(hx - 0.08), top, hz), 0.04, cageMat);
 }
 function buildCar(type, colour, isPlayer, t, parts, inner) {
   const variant = isPlayer || type === 'pickup' ? 0 : BUILD.variant;
