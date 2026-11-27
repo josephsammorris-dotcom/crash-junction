@@ -1774,7 +1774,7 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
 const MODELS = {};
 const MODEL_SCALE = {};
 async function loadModels() {
-  for (const name of ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer']) {
+  for (const name of ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer', 'player']) {
     try {
       let buf;
       const emb = window.__hsxModels && window.__hsxModels[name];
@@ -1808,7 +1808,7 @@ async function loadModels() {
   }
   if (window.__hsxModelExt) { // test builds: say how many models arrived
     const n = Object.keys(MODELS).length, d = document.createElement('div');
-    d.textContent = 'Models loaded: ' + n + ' of 10' + (n < 10 ? ' (' + ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer'].filter((k) => !MODELS[k]).join(', ') + ' missing)' : '');
+    d.textContent = 'Models loaded: ' + n + ' of 11' + (n < 11 ? ' (' + ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer', 'player'].filter((k) => !MODELS[k]).join(', ') + ' missing)' : '');
     d.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99;font:12px sans-serif;color:#fff;background:#000a;padding:3px 8px;border-radius:6px;pointer-events:none';
     document.body.appendChild(d); setTimeout(() => d.remove(), 12000);
   }
@@ -1880,7 +1880,18 @@ function buildModelCar(name, colour, t, parts, inner) {
     }
   }
   // a simple cabin: lined walls and seats behind the glass
-  if (name === 'estate' || M.cab) {
+  if (name === 'player') {
+    const cab = M.cab; playerCabin(inner, B, cab, t.W);
+    parts.cab = { c: cab, B, cz: 0, W: t.W, pillars: false, seats: [-0.1, -0.95] };
+    parts.revMat = new THREE.MeshStandardMaterial({ color: '#cfd3d6', emissive: '#ffffff', emissiveIntensity: 0.05, roughness: 0.1 });
+    part(inner, new THREE.BoxGeometry(0.36, 0.18, 0.02), crashPlateMat, 0, B + 0.64, -t.L / 2 + 0.03).rotation.y = Math.PI;
+    parts.exhaust = []; const soot = new THREE.MeshStandardMaterial({ color: '#0c0c0d', roughness: 0.9 });
+    for (const s of [-1, 1]) {
+      const pipe = part(inner, new THREE.CylinderGeometry(0.065, 0.065, 0.3, 16), chrome, s * t.W * 0.24, B + 0.3, -t.L / 2 + 0.1); pipe.rotation.x = Math.PI / 2;
+      const core = part(inner, new THREE.CircleGeometry(0.05, 14), soot, s * t.W * 0.24, B + 0.3, -t.L / 2 - 0.052); core.rotation.y = Math.PI;
+      const tip = new THREE.Object3D(); tip.position.set(s * t.W * 0.24, B + 0.3, -t.L / 2 - 0.1); inner.add(tip); parts.exhaust.push(tip);
+    }
+  } else if (name === 'estate' || M.cab) {
     const cab = M.cab || { belt: 0.9, roof: 1.4, zf0: 0.86, zf1: 0.3, zr0: -2.15, zr1: -2.05, wb: 0.86, wt: 0.8 };
     if (!window.__noInterior) carInterior(inner, B, cab, t.W, false);
     parts.cab = { c: cab, B, cz: 0, W: t.W, pillars: false, seats: [-0.1, -0.95] };
@@ -1907,8 +1918,39 @@ function centrePart(m) {
   const g = m.geometry = m.geometry.clone(); g.computeBoundingBox(); const c = g.boundingBox.getCenter(new THREE.Vector3());
   g.translate(-c.x, -c.y, -c.z); m.position.add(c); g.computeBoundingSphere();
 }
+function playerCabin(inner, B, cab, W) {
+    // ---- a proper cabin behind the glass: bucket seats, rear bench, dash, a roll cage and a helmeted driver
+    const yb = B + cab.belt, cw = W / 2 * cab.wb;
+    const fab = new THREE.MeshStandardMaterial({ color: '#202124', roughness: 0.95 }), red = new THREE.MeshStandardMaterial({ color: '#a8141c', roughness: 0.6 });
+    const cageMat = new THREE.MeshStandardMaterial({ color: '#c9ccd1', metalness: 0.7, roughness: 0.35 });
+    part(inner, new THREE.BoxGeometry(cw * 2 - 0.06, 0.012, cab.zf0 - cab.zr0 - 0.1), fab, 0, yb + 0.006, (cab.zf0 + cab.zr0) / 2); // floor of the greenhouse hides the body inside
+    part(inner, new THREE.BoxGeometry(cw * 2 - 0.1, 0.13, 0.32), fab, 0, yb + 0.06, cab.zf0 - 0.3); // dash
+    steeringWheel(inner, 0.38, yb + 0.2, cab.zf0 - 0.5);
+    for (const sx of [-1, 1]) {
+      const x = sx * 0.38;
+      const back = part(inner, new RoundedBoxGeometry(0.46, 0.4, 0.1, 2, 0.04), fab, x, yb + 0.2, -0.42); back.rotation.x = -0.12;
+      for (const b of [-1, 1]) part(inner, new THREE.BoxGeometry(0.05, 0.34, 0.12), red, x + b * 0.21, yb + 0.18, -0.41).rotation.x = -0.12; // bolsters
+      part(inner, new RoundedBoxGeometry(0.22, 0.12, 0.09, 2, 0.03), fab, x, yb + 0.43, -0.47);
+    }
+    part(inner, new RoundedBoxGeometry(cw * 2 - 0.25, 0.28, 0.12, 2, 0.04), fab, 0, yb + 0.14, -1.02).rotation.x = -0.25; // rear bench
+    part(inner, new THREE.BoxGeometry(cw * 2 - 0.2, 0.02, 0.3), fab, 0, yb + 0.02, cab.zr0 + 0.22); // parcel shelf
+    // the driver (left-hand drive): race suit and a white helmet with a dark visor
+    part(inner, new RoundedBoxGeometry(0.42, 0.22, 0.24, 2, 0.08), new THREE.MeshStandardMaterial({ color: '#1d3f8f', roughness: 0.8 }), 0.38, yb + 0.12, -0.3);
+    const helm = part(inner, new THREE.SphereGeometry(0.135, 20, 14), new THREE.MeshPhysicalMaterial({ color: '#f2f2ee', roughness: 0.25, clearcoat: 1 }), 0.38, yb + 0.33, -0.3);
+    part(inner, new THREE.SphereGeometry(0.137, 20, 8, -Math.PI * 0.35, Math.PI * 0.7, Math.PI * 0.38, Math.PI * 0.2), new THREE.MeshStandardMaterial({ color: '#0d0e10', metalness: 0.6, roughness: 0.15 }), 0.38, yb + 0.33, -0.3);
+    part(inner, new THREE.BoxGeometry(0.03, 0.03, 0.27), red, 0.38, yb + 0.44, -0.3);
+    // roll cage: main hoop behind the front seats, a diagonal, and stays back to the rear
+    const hz = -0.62, hx = cw - 0.1, top = yb + 0.43;
+    for (const sx of [-1, 1]) {
+      bar(inner, new THREE.Vector3(sx * hx, yb, hz), new THREE.Vector3(sx * (hx - 0.08), top, hz), 0.045, cageMat);
+      bar(inner, new THREE.Vector3(sx * (hx - 0.08), top, hz), new THREE.Vector3(sx * (hx - 0.02), yb + 0.03, cab.zr0 + 0.25), 0.04, cageMat);
+    }
+    bar(inner, new THREE.Vector3(-(hx - 0.08), top, hz), new THREE.Vector3(hx - 0.08, top, hz), 0.045, cageMat);
+    bar(inner, new THREE.Vector3(hx, yb, hz), new THREE.Vector3(-(hx - 0.08), top, hz), 0.04, cageMat);
+}
 function buildCar(type, colour, isPlayer, t, parts, inner) {
   const variant = isPlayer || type === 'pickup' ? 0 : BUILD.variant;
+  if (isPlayer && buildModelCar('player', colour, t, parts, inner)) return;
   if (!isPlayer && (type === 'car' || type === 'pickup') && buildModelCar(type === 'pickup' ? 'pickup' : ['coupe', 'fastback', 'estate'][variant], colour, t, parts, inner)) return;
   const P = isPlayer ? PROFILES.car : type === 'pickup' ? PROFILES.pickup : CAR_STYLES[variant];
   const PO = P.o || {};
@@ -2023,34 +2065,7 @@ function buildCar(type, colour, isPlayer, t, parts, inner) {
     // front splitter and side skirts
     part(inner, new THREE.BoxGeometry(W * 0.96, 0.035, 0.24), trimMat, 0, noseY - 0.13, L / 2 - 0.04);
     for (const s of [-1, 1]) part(inner, new THREE.BoxGeometry(0.07, 0.1, L * 0.46), trimMat, s * (W / 2 - 0.01), B + P.bottom + 0.07, -0.05);
-    // ---- a proper cabin behind the glass: bucket seats, rear bench, dash, a roll cage and a helmeted driver
-    const cab = P.cab, yb = B + cab.belt, cw = W / 2 * cab.wb;
-    const fab = new THREE.MeshStandardMaterial({ color: '#202124', roughness: 0.95 }), red = new THREE.MeshStandardMaterial({ color: '#a8141c', roughness: 0.6 });
-    const cageMat = new THREE.MeshStandardMaterial({ color: '#c9ccd1', metalness: 0.7, roughness: 0.35 });
-    part(inner, new THREE.BoxGeometry(cw * 2 - 0.06, 0.012, cab.zf0 - cab.zr0 - 0.1), fab, 0, yb + 0.006, (cab.zf0 + cab.zr0) / 2); // floor of the greenhouse hides the body inside
-    part(inner, new THREE.BoxGeometry(cw * 2 - 0.1, 0.13, 0.32), fab, 0, yb + 0.06, cab.zf0 - 0.3); // dash
-    steeringWheel(inner, 0.38, yb + 0.2, cab.zf0 - 0.5);
-    for (const sx of [-1, 1]) {
-      const x = sx * 0.38;
-      const back = part(inner, new RoundedBoxGeometry(0.46, 0.4, 0.1, 2, 0.04), fab, x, yb + 0.2, -0.42); back.rotation.x = -0.12;
-      for (const b of [-1, 1]) part(inner, new THREE.BoxGeometry(0.05, 0.34, 0.12), red, x + b * 0.21, yb + 0.18, -0.41).rotation.x = -0.12; // bolsters
-      part(inner, new RoundedBoxGeometry(0.22, 0.12, 0.09, 2, 0.03), fab, x, yb + 0.43, -0.47);
-    }
-    part(inner, new RoundedBoxGeometry(cw * 2 - 0.25, 0.28, 0.12, 2, 0.04), fab, 0, yb + 0.14, -1.02).rotation.x = -0.25; // rear bench
-    part(inner, new THREE.BoxGeometry(cw * 2 - 0.2, 0.02, 0.3), fab, 0, yb + 0.02, cab.zr0 + 0.22); // parcel shelf
-    // the driver (left-hand drive): race suit and a white helmet with a dark visor
-    part(inner, new RoundedBoxGeometry(0.42, 0.22, 0.24, 2, 0.08), new THREE.MeshStandardMaterial({ color: '#1d3f8f', roughness: 0.8 }), 0.38, yb + 0.12, -0.3);
-    const helm = part(inner, new THREE.SphereGeometry(0.135, 20, 14), new THREE.MeshPhysicalMaterial({ color: '#f2f2ee', roughness: 0.25, clearcoat: 1 }), 0.38, yb + 0.33, -0.3);
-    part(inner, new THREE.SphereGeometry(0.137, 20, 8, -Math.PI * 0.35, Math.PI * 0.7, Math.PI * 0.38, Math.PI * 0.2), new THREE.MeshStandardMaterial({ color: '#0d0e10', metalness: 0.6, roughness: 0.15 }), 0.38, yb + 0.33, -0.3);
-    part(inner, new THREE.BoxGeometry(0.03, 0.03, 0.27), red, 0.38, yb + 0.44, -0.3);
-    // roll cage: main hoop behind the front seats, a diagonal, and stays back to the rear
-    const hz = -0.62, hx = cw - 0.1, top = yb + 0.43;
-    for (const sx of [-1, 1]) {
-      bar(inner, new THREE.Vector3(sx * hx, yb, hz), new THREE.Vector3(sx * (hx - 0.08), top, hz), 0.045, cageMat);
-      bar(inner, new THREE.Vector3(sx * (hx - 0.08), top, hz), new THREE.Vector3(sx * (hx - 0.02), yb + 0.03, cab.zr0 + 0.25), 0.04, cageMat);
-    }
-    bar(inner, new THREE.Vector3(-(hx - 0.08), top, hz), new THREE.Vector3(hx - 0.08, top, hz), 0.045, cageMat);
-    bar(inner, new THREE.Vector3(hx, yb, hz), new THREE.Vector3(-(hx - 0.08), top, hz), 0.04, cageMat);
+    playerCabin(inner, B, P.cab, W);
     // ---- tail-light clusters: dark bezels, twin LED rings, reversing lamps and indicators; a third brake light on the roof
     const rz = -L / 2 + 0.07, yR = B + lerpT(P.top, -0.95) - 0.08, sR = W * 0.36;
     const bezel = new THREE.MeshPhysicalMaterial({ color: '#141518', metalness: 0.8, roughness: 0.25, clearcoat: 1 });
