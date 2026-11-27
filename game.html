@@ -1881,7 +1881,7 @@ function buildModelCar(name, colour, t, parts, inner) {
   }
   // a simple cabin: lined walls and seats behind the glass
   if (name === 'player') {
-    const cab = M.cab; playerCabin(inner, B, cab, t.W);
+    const cab = { ...M.cab, drop: 0.11 }; playerCabin(inner, B, cab, t.W);
     parts.cab = { c: cab, B, cz: 0, W: t.W, pillars: false, seats: [-0.1, -0.95] };
     parts.revMat = new THREE.MeshStandardMaterial({ color: '#cfd3d6', emissive: '#ffffff', emissiveIntensity: 0.05, roughness: 0.1 });
     part(inner, new THREE.BoxGeometry(0.36, 0.18, 0.02), crashPlateMat, 0, B + 0.64, -t.L / 2 + 0.03).rotation.y = Math.PI;
@@ -1920,7 +1920,7 @@ function centrePart(m) {
 }
 function playerCabin(inner, B, cab, W) {
     // ---- a proper cabin behind the glass: bucket seats, rear bench, dash, and a helmeted driver
-    const yb = B + cab.belt, cw = W / 2 * cab.wb;
+    const yb = B + cab.belt - (cab.drop || 0), cw = W / 2 * cab.wb;
     const fab = new THREE.MeshStandardMaterial({ color: '#202124', roughness: 0.95 }), red = new THREE.MeshStandardMaterial({ color: '#a8141c', roughness: 0.6 });
     const cageMat = new THREE.MeshStandardMaterial({ color: '#c9ccd1', metalness: 0.7, roughness: 0.35 });
     part(inner, new THREE.BoxGeometry(cw * 2 - 0.06, 0.012, cab.zf0 - cab.zr0 - 0.1), fab, 0, yb + 0.006, (cab.zf0 + cab.zr0) / 2); // floor of the greenhouse hides the body inside
