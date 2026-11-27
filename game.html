@@ -2708,12 +2708,57 @@ function shockRing(p, vel) {
 const fuelMat = new THREE.MeshStandardMaterial({ color: '#0c0907', roughness: 0.1, metalness: 0, alphaMap: blobTex, transparent: true, opacity: 0.85, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, envMapIntensity: 1.6 });
 const puddles = [], leakers = []; let puddleIdx = 0;
 const PUDDLE_MAX = 90;
+const scorchMat = fuelMat.clone(); scorchMat.color.set('#0b0807'); scorchMat.roughness = 0.95; scorchMat.opacity = 0.7;
+const spillRng = rng(9091); let spillT = 0;
+// a spill that a burning wreck (or a blast) reaches can catch light: it burns for a few seconds, spreads to spills and vehicles
+// close by, then leaves a scorched patch that can't burn again
+function igniteSpill(m) { const u = m.userData; if (u.fire || u.scorched) return; u.fire = { t: 0, life: 5 + spillRng() * 5 }; }
+function spillRadius(m) { return m.userData.size * 1.3 * (1 - Math.exp(-(m.userData.sAge || 0) * 0.55)); }
+function updateSpills(dt) {
+  spillT -= dt; const tick = spillT <= 0; if (tick) spillT = 0.2;
+  for (const m of puddles) {
+    if (!m || !m.visible) continue;
+    const u = m.userData; u.sAge = (u.sAge || 0) + dt;
+    const R = spillRadius(m);
+    if (u.fire) {
+      u.fire.t += dt;
+      if (u.fire.t >= u.fire.life) { u.fire = null; u.scorched = true; m.material = scorchMat; continue; }
+      if (!tick) continue;
+      for (const p2 of puddles) {
+        if (!p2 || !p2.visible || p2 === m || p2.userData.fire || p2.userData.scorched) continue;
+        if (Math.hypot(p2.position.x - m.position.x, p2.position.z - m.position.z) < R + spillRadius(p2) + 1.0 && spillRng() < 0.2) igniteSpill(p2);
+      }
+      for (const w of allUnits()) {
+        if (w.fire || w.burnt) continue;
+        if (Math.hypot(w.body.position.x - m.position.x, w.body.position.z - m.position.z) - unitRadius(w) * 0.6 < R && spillRng() < 0.1) ignite(w);
+      }
+    } else if (tick && !u.scorched && R > 0.3) {
+      for (const w of burning) {
+        if (w.burnt || w.state === 'gone' || w.fire.I < 0.3) continue;
+        const reach = w.isTank ? 9 : 5, d = Math.hypot(w.body.position.x - m.position.x, w.body.position.z - m.position.z) - unitRadius(w) * 0.6 - R;
+        if (d < reach && spillRng() < 0.1 * w.fire.I * (1 - Math.max(0, d) / reach) * (w.isTank ? 2.5 : 1)) { igniteSpill(m); break; }
+      }
+    }
+  }
+}
+function spillBlast(x, z, r) { for (const m of puddles) if (m && m.visible && Math.hypot(m.position.x - x, m.position.z - z) < r && spillRng() < 0.8) igniteSpill(m); }
+function spillFlames(m, dt) {
+  const u = m.userData, F = u.fire, I = Math.max(0, Math.min(1, F.t / 0.8, (F.life - F.t) / 1.5)), R = spillRadius(m);
+  const n = Math.min(70, 16 * R) * I * dt; u.emit = (u.emit || 0) + n;
+  while (u.emit >= 1) {
+    u.emit -= 1; const a = Math.random() * 6.283, rr = Math.sqrt(Math.random()) * R * 0.85, hot = Math.random() < 0.4;
+    firePool.emit({ x: m.position.x + Math.cos(a) * rr, y: m.position.y + 0.1, z: m.position.z + Math.sin(a) * rr * u.stretch, vx: (Math.random() - 0.5) * 0.6, vy: 1.2 + Math.random() * 1.8, vz: (Math.random() - 0.5) * 0.6,
+      r: hot ? 6.5 : 4.6, gC: hot ? 3.0 : 1.3, b: hot ? 0.9 : 0.22, s0: (0.7 + Math.random() * 0.5) * (0.5 + I * 0.6), s1: 0.2, a: 0.8, life: 0.35 + Math.random() * 0.4, drag: 0.9, wind: 0.7, g: 0 });
+  }
+  u.smokeT = (u.smokeT || 0) - dt;
+  if (u.smokeT <= 0) { u.smokeT = 0.35 / Math.max(0.3, I); _fp.set(m.position.x + (Math.random() - 0.5) * R, m.position.y + 0.8, m.position.z + (Math.random() - 0.5) * R); puff(_fp, 'black'); }
+}
 function startLeak(v) { v.leak = { t: 0, x: 1e9, z: 1e9 }; leakers.push(v); }
 function dropPuddle(x, z, size) {
   let m = puddles[puddleIdx];
   if (!m) { m = new THREE.Mesh(blobGeo, fuelMat); m.renderOrder = 2; scene.add(m); puddles[puddleIdx] = m; m.userData = {}; }
   puddleIdx = (puddleIdx + 1) % PUDDLE_MAX;
-  m.visible = true; m.position.set(x, groundY(x, z) + 0.045, z); m.rotation.y = Math.random() * 6.28; m.userData.size = size; m.userData.age = 0; m.scale.set(0.01, 1, 0.01);
+  m.material = fuelMat; m.userData.fire = null; m.userData.scorched = false; m.userData.sAge = 0; m.visible = true; m.position.set(x, groundY(x, z) + 0.045, z); m.rotation.y = Math.random() * 6.28; m.userData.size = size; m.userData.age = 0; m.scale.set(0.01, 1, 0.01);
   m.userData.stretch = 0.7 + Math.random() * 0.6;
 }
 function updateLeaks(dt) {
@@ -2726,7 +2771,7 @@ function updateLeaks(dt) {
   }
   for (const m of puddles) {
     if (!m || !m.visible) continue;
-    const u = m.userData; u.age += dt;
+    const u = m.userData; u.age += dt; if (u.fire) spillFlames(m, dt);
     const k = 1 - Math.exp(-u.age * 0.55);
     m.scale.set(u.size * 2.6 * k, 1, u.size * 2.6 * k * u.stretch);
   }
@@ -3198,20 +3243,20 @@ function tyres(v, dt) {
 }
 
 /* ------------------------------------------------------------------ skid marks and tyre smoke */
-const skidMat = new THREE.MeshBasicMaterial({ color: '#101114', transparent: true, opacity: 0.72, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+const skidMat = new THREE.MeshBasicMaterial({ color: '#101114', transparent: true, opacity: 0.78, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8 });
 const skidGeo = new THREE.PlaneGeometry(1, 1); skidGeo.rotateX(-Math.PI / 2);
-const skids = []; let skidIdx = 0;
+// One instanced mesh holds every mark (a pile-up used to wrap the old 1,800-segment ring in about a second, so marks kept vanishing)
+const SKID_MAX = 12000;
+const skidInst = new THREE.InstancedMesh(skidGeo, skidMat, SKID_MAX); skidInst.count = 0; skidInst.frustumCulled = false; skidInst.renderOrder = 2.5; scene.add(skidInst);
+let skidIdx = 0, skidN = 0;
+const _sM = new THREE.Matrix4(), _sQ = new THREE.Quaternion(), _sP = new THREE.Vector3(), _sS = new THREE.Vector3(), _sY = new THREE.Vector3(0, 1, 0);
 function skidSegment(a, b2, width) {
-  let m = skids[skidIdx];
-  if (!m) { m = new THREE.Mesh(skidGeo, skidMat); m.renderOrder = 1; skids[skidIdx] = m; scene.add(m); }
-  skidIdx = (skidIdx + 1) % 1800;
-  const dx = b2.x - a.x, dz = b2.z - a.z;
-  m.position.set((a.x + b2.x) / 2, groundY((a.x + b2.x) / 2, (a.z + b2.z) / 2) + 0.05, (a.z + b2.z) / 2);
-  m.rotation.set(0, Math.atan2(dx, dz), 0);
-  m.scale.set(width, 1, Math.hypot(dx, dz) + 0.05);
-  m.visible = true;
+  const dx = b2.x - a.x, dz = b2.z - a.z, mx = (a.x + b2.x) / 2, mz = (a.z + b2.z) / 2;
+  _sP.set(mx, groundY(mx, mz) + 0.07, mz); _sQ.setFromAxisAngle(_sY, Math.atan2(dx, dz)); _sS.set(width, 1, Math.hypot(dx, dz) + 0.01);
+  skidInst.setMatrixAt(skidIdx, _sM.compose(_sP, _sQ, _sS));
+  skidIdx = (skidIdx + 1) % SKID_MAX; skidN = Math.min(SKID_MAX, skidN + 1); skidInst.count = skidN; skidInst.instanceMatrix.needsUpdate = true;
 }
-function clearSkids() { for (const m of skids) if (m) m.visible = false; skidIdx = 0; }
+function clearSkids() { skidN = 0; skidIdx = 0; skidInst.count = 0; }
 const _wp = new THREE.Vector3(), _wq3 = new THREE.Quaternion();
 function tyreEffects(v, dt) {
   const b = v.body, t = v.t;
@@ -3222,7 +3267,9 @@ function tyreEffects(v, dt) {
     v.wheelPrev && v.wheelPrev.fill(null);
     return;
   }
-  const skidding = v.skid > 2.0;
+  // hysteresis plus a short hold, so a skid hovering around the threshold lays one unbroken mark instead of flickering dashes
+  const on = v.skid > (v.skidOn ? 1.0 : 2.0); v.skidOn = on; v.skidHold = on ? 0.3 : (v.skidHold || 0) - dt;
+  const skidding = on || v.skidHold > 0;
   v.wheelPrev ||= [null, null, null, null];
   if (!skidding) { v.wheelPrev.fill(null); return; }
   _wq3.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
@@ -3231,7 +3278,7 @@ function tyreEffects(v, dt) {
     _wp.set(corners[i][0], 0, corners[i][1]).applyQuaternion(_wq3).add(b.position);
     const prev = v.wheelPrev[i];
     if (!prev) { v.wheelPrev[i] = _wp.clone(); continue; }
-    if (prev.distanceToSquared(_wp) > 0.25) { skidSegment(prev, _wp, t.mass > 4000 ? 0.42 : 0.28); prev.copy(_wp); }
+    if (prev.distanceToSquared(_wp) > 0.36) { skidSegment(prev, _wp, t.mass > 4000 ? 0.42 : 0.28); prev.copy(_wp); }
   }
   v.tyreSmokeT = (v.tyreSmokeT || 0) - dt;
   if (v.tyreSmokeT <= 0 && v.skid > 3) {
@@ -4116,6 +4163,7 @@ function explode(u) {
   for (let i = 0; i < 30; i++) puff(new THREE.Vector3(c.x + (fireRng() - 0.5) * 8, c.y + fireRng() * 4, c.z + (fireRng() - 0.5) * 8), 'black');
   sparks(c, 90, 18);
   explFlash = { t: 0, pos: c.clone() };
+  spillBlast(c.x, c.z, 22);
   cam.shake = Math.max(cam.shake, 1.2);
   blurPulse(c, 0.2);
   rumble(1, 1, 750);
@@ -5112,6 +5160,7 @@ function stepSim(dt) {
   const hits = [...hitQueue.values()]; hitQueue.clear();
   for (const h of hits) applyHit(h);
   updateFires(dt);
+  updateSpills(dt);
   // Steam from smashed radiators, smoke from write-offs
   for (const v of [...vehicles, player.veh]) {
     if (!v || v.state === 'gone' || v.fire || !(v.steam || v.sev > 0.6)) continue;
@@ -5450,5 +5499,5 @@ audioInit(); // starts suspended until the player's first touch or key (browser 
 requestAnimationFrame(frame);
 
 // Hook for automated testing
-window.__hsxTest = { THREE, BUILD, TYPES, RIG_GAP, groundY, buildVehicle, CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); updateLeaks(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, fxPass, dofPass, fxState, lampPool, blobMesh, get lampN() { return lampN; }, get blobN() { return blobN; }, get puddleN() { return puddles.filter((m) => m && m.visible).length; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
+window.__hsxTest = { dropPuddle, ignite, skidSegment, puddles, get vehicles() { return vehicles; }, get burning() { return burning; }, skidStats: () => [skidN, SKID_MAX], THREE, BUILD, TYPES, RIG_GAP, groundY, buildVehicle, CACTI, terrainH, routeSteer, routeLat, get lanes() { return lanes; }, LANES, laneAt, get runTime() { return runTime; }, sfx: { sfxImpact, sfxBoom, sfxHorn, sfxGlass, sfxWhoosh, sfxFanfare, sfxCrash }, setSection, newGame, startReplay, finishReplay, get rec() { return rec; }, get replay() { return replay; }, get game() { return game; }, setup, get focus() { return focus; }, AU, burnTest: (v) => { v.fire = { I: 0, age: 0, emitT: 0, smokeT: 0, charT: 0, life: 0 }; burnOut(v); }, rollTest: (v) => { v.rolled = false; maybeRoll(v, { vel: 30, otherMass: 2000, dirIn: new THREE.Vector3(v.lane ? v.lane.dir.z : 1, 0, v.lane ? -v.lane.dir.x : 0) }, "left"); return !!v.rolling; }, panic: (v) => panic(v), world, sun, composer, gtao, bloom, grade, sky, setManual: (m) => { manual = m; }, tick, scene, camera, renderer, start: startRun, simulate: (sec, fx) => { for (let t = 0; t < sec && state === 'running'; t += STEP) { stepSim(STEP); if (fx) { updateParticles(STEP); updateBlur(STEP); updateLeaks(STEP); } } syncMeshes(); updateHud(); return window.__hsxLast || null; }, snapCam: () => updateCamera(5), setAutopilot: (f) => { autopilot = f; }, get state() { return state; }, get score() { return score; }, get maxLift() { return maxLift; }, resetLift: () => { maxLift = 0; }, setCam: (c) => { camOverride = c; }, fxPass, dofPass, fxState, lampPool, blobMesh, get lampN() { return lampN; }, get blobN() { return blobN; }, get puddleN() { return puddles.filter((m) => m && m.visible).length; }, get vehicles() { return vehicles; }, get skidCount() { return skids.filter((m) => m && m.visible).length; }, get player() { return player; }, CFG };
 </script>
