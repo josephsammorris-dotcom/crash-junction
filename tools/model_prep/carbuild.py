@@ -10,7 +10,7 @@ from frame import fit, to_game, nrm_game
 from scipy.spatial import cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 cfg = importlib.import_module(sys.argv[1]); HI, LO, OUT = sys.argv[2:5]
 hi = read(HI); lo = read(LO)
@@ -166,6 +166,13 @@ for k in range(4):
     wl.append(dict(x=float(c[0]), y=float(c[1]), z=float(c[2]), front=bool(wheels[k]['front']), side=int(wheels[k]['side']),
         geo=dict(pos=add(wp - c, np.float32), nrm=add(np.clip(np.round(n * 127), -127, 127), np.int8), uv=add(wu, np.float32), idx=add(wi, np.uint16), big=False, n=len(wp))))
 
+# ---- optional: repaint baked-in dark patches (cfg.RECOLOUR picks the faces) with the panel's own colour so they respray like paint
+if getattr(cfg, 'RECOLOUR', None):
+    rsel = cfg.RECOLOUR(C, col, FN, G); okc = np.isin(G, [n for n in names if n.split('_')[0] in set(cfg.PAINT)]) & ~rsel & (lum > 0.3)
+    body_col = np.median(col[okc], axis=0); arr = np.asarray(img.convert('RGB')).copy(); ih, iw = arr.shape[:2]
+    rm = Image.new('L', (iw, ih), 0); rd = ImageDraw.Draw(rm)
+    for ti in np.where(rsel)[0]: rd.polygon([(UV[k][0] * iw, (UV[k][1]) * ih) for k in I[ti]], fill=255)
+    rm = np.asarray(rm.filter(ImageFilter.MaxFilter(5))) > 0; arr[rm] = (body_col * 255).astype(np.uint8); img = Image.fromarray(arr); print('recoloured', int(rsel.sum()), 'faces to', body_col)
 # ---- paint mask by UV region (works for white and silver cars too): paintable panels, minus dark trim, glass, lamps
 paint_groups = set(cfg.PAINT)
 mw = 1024; M = Image.new('L', (mw, mw), 0); dr = ImageDraw.Draw(M)

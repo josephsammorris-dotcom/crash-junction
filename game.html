@@ -1772,7 +1772,7 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
    separate meshes, one wheel (front left, centred on its hub), a colour texture and a paint/gloss mask so traffic can
    be resprayed. Made from 3D models (Meshy, CC BY 4.0) by tools in the repo: see models/README. */
 const MODELS = {};
-const MODEL_SCALE = { estate: [1.13, 1.1, 1.03] };
+const MODEL_SCALE = {};
 async function loadModels() {
   for (const name of ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer']) {
     try {
