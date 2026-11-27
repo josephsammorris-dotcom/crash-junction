@@ -1774,7 +1774,7 @@ function pickupDetails(parts, inner, P, L, W, B, colour, paint) {
 const MODELS = {};
 const MODEL_SCALE = { estate: [1.13, 1.1, 1.03] };
 async function loadModels() {
-  for (const name of ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer']) {
+  for (const name of ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer']) {
     try {
       let buf;
       const emb = window.__hsxModels && window.__hsxModels[name];
@@ -1808,7 +1808,7 @@ async function loadModels() {
   }
   if (window.__hsxModelExt) { // test builds: say how many models arrived
     const n = Object.keys(MODELS).length, d = document.createElement('div');
-    d.textContent = 'Models loaded: ' + n + ' of 7' + (n < 7 ? ' (' + ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer'].filter((k) => !MODELS[k]).join(', ') + ' missing)' : '');
+    d.textContent = 'Models loaded: ' + n + ' of 10' + (n < 10 ? ' (' + ['estate', 'fastback', 'coupe', 'bus', 'boxtruck', 'hauler_tractor', 'hauler_trailer', 'pickup', 'tanker_tractor', 'tanker_trailer'].filter((k) => !MODELS[k]).join(', ') + ' missing)' : '');
     d.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99;font:12px sans-serif;color:#fff;background:#000a;padding:3px 8px;border-radius:6px;pointer-events:none';
     document.body.appendChild(d); setTimeout(() => d.remove(), 12000);
   }
@@ -1909,7 +1909,7 @@ function centrePart(m) {
 }
 function buildCar(type, colour, isPlayer, t, parts, inner) {
   const variant = isPlayer || type === 'pickup' ? 0 : BUILD.variant;
-  if (!isPlayer && type === 'car' && buildModelCar(['coupe', 'fastback', 'estate'][variant], colour, t, parts, inner)) return;
+  if (!isPlayer && (type === 'car' || type === 'pickup') && buildModelCar(type === 'pickup' ? 'pickup' : ['coupe', 'fastback', 'estate'][variant], colour, t, parts, inner)) return;
   const P = isPlayer ? PROFILES.car : type === 'pickup' ? PROFILES.pickup : CAR_STYLES[variant];
   const PO = P.o || {};
   const L = t.L, W = t.W, B = -t.H / 2;
@@ -2106,7 +2106,7 @@ function mudFlaps(inner, W, y, zs) { const g = []; for (const z of zs) for (cons
 const amberMat = new THREE.MeshStandardMaterial({ color: '#7a4304', emissive: '#ff8a10', emissiveIntensity: 0.35, roughness: 0.2 });
 const tapeMat = new THREE.MeshStandardMaterial({ color: '#b0201a', roughness: 0.3, metalness: 0.2, emissive: '#400', emissiveIntensity: 0.2 });
 function buildTruck(type, colour, t, parts, inner) {
-  const mdl = { van: 'boxtruck', bus: 'bus', lorry: 'hauler_tractor' }[type];
+  const mdl = { van: 'boxtruck', bus: 'bus', lorry: 'hauler_tractor', tanker: 'tanker_tractor' }[type];
   if (mdl && buildModelCar(mdl, colour, t, parts, inner)) return;
   const L = t.L, W = t.W, H = t.H, B = -t.H / 2;
   if (type === 'van') {
